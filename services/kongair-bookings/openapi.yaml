@@ -1,0 +1,260 @@
+# OpenAPI spec for the KongAir Bookings service (app team owned)
+#
+# This service is Lambda-backed (see README.md at the repo root). The pipeline
+# overwrites `servers[0].url` with the Lambda function name at deploy time, so
+# the value below is only a placeholder — it is never actually dialled.
+openapi: 3.0.3
+info:
+  title: KongAir Bookings API
+  description: >-
+    Lets KongAir customers create and retrieve their flight bookings.
+  version: "1.0.0"
+servers:
+  - url: https://placeholder.example.com
+paths:
+  /bookings:
+    get:
+      tags:
+        - sales
+      summary: Get a customer's current bookings
+      operationId: getBookings
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Booking"
+              examples:
+                bookingsList:
+                  value:
+                    - ticket_number: CDF3412
+                      seat: 32A
+                      flight:
+                        number: KA924
+                        route_id: LHR-SFO
+                        scheduled_departure: "2024-09-03T09:15:00Z"
+                        scheduled_arrival: "2024-09-03T14:23:00Z"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+    post:
+      tags:
+        - sales
+      summary: Create a new customer booking
+      operationId: createBooking
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BookingRequest"
+            examples:
+              newBooking:
+                value:
+                  flight_number: KA924
+                  seat: 32A
+      responses:
+        "201":
+          description: Booking created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookingResponse"
+              examples:
+                created:
+                  value:
+                    ticket_number: CDF3412
+        "400":
+          description: The request body did not match the expected shape.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+        "404":
+          description: No flight exists with the given flight_number.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+    options:
+      summary: CORS preflight for /bookings
+      operationId: corsBookings
+      security: []
+      responses:
+        "200":
+          description: CORS preflight
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+                example: "*"
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+                example: GET,POST,OPTIONS
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+                example: Content-Type,Authorization
+          content: {}
+
+  /bookings/{ticketNumber}:
+    get:
+      tags:
+        - sales
+      summary: Get a single booking by ticket number
+      operationId: getBookingByTicketNumber
+      parameters:
+        - name: ticketNumber
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+        "404":
+          description: No booking exists with the given ticket number.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+    delete:
+      tags:
+        - sales
+      summary: Cancel a booking
+      operationId: cancelBooking
+      parameters:
+        - name: ticketNumber
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Booking cancelled successfully
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+        "404":
+          description: No booking exists with the given ticket number.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+    options:
+      summary: CORS preflight for /bookings/{ticketNumber}
+      operationId: corsBookingByTicketNumber
+      security: []
+      parameters:
+        - name: ticketNumber
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: CORS preflight
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+                example: "*"
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+                example: GET,DELETE,OPTIONS
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+                example: Content-Type,Authorization
+          content: {}
+
+components:
+  schemas:
+    Booking:
+      type: object
+      properties:
+        ticket_number:
+          type: string
+        seat:
+          type: string
+        flight:
+          type: object
+          properties:
+            number:
+              type: string
+            route_id:
+              type: string
+            scheduled_departure:
+              type: string
+              format: date-time
+            scheduled_arrival:
+              type: string
+              format: date-time
+      required:
+        - ticket_number
+        - flight
+    BookingRequest:
+      type: object
+      properties:
+        flight_number:
+          type: string
+        seat:
+          type: string
+      required:
+        - flight_number
+    BookingResponse:
+      type: object
+      properties:
+        ticket_number:
+          type: string
+      required:
+        - ticket_number
+    ProblemDetails:
+      type: object
+      properties:
+        statusCode:
+          type: number
+        code:
+          type: string
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - statusCode
+        - code
+        - error
+        - message
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: sales

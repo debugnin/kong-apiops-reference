@@ -1,0 +1,240 @@
+# OpenAPI spec for the KongAir Flights service (app team owned)
+#
+# This service is ECS/ALB-backed (see README.md at the repo root). The upstream
+# URL differs per environment, so it is written as a placeholder and
+# substituted by the pipeline from KONGAIR_FLIGHTS_UPSTREAM_URL — see
+# docs/QUICKSTART.md.
+openapi: 3.0.3
+info:
+  title: KongAir Flights API
+  description: >-
+    Provides the scheduled flights for KongAir.
+  version: "1.0.0"
+servers:
+  - url: ${KONGAIR_FLIGHTS_UPSTREAM_URL}
+    description: Upstream server for the kongair-flights service
+paths:
+  /flights:
+    get:
+      tags:
+        - flight-data
+      summary: Get KongAir planned flights
+      description: Returns all the scheduled flights for a given day.
+      operationId: getFlights
+      parameters:
+        - name: date
+          in: query
+          description: Filter by date (defaults to current day)
+          required: false
+          style: form
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Successful response with scheduled flights
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Flight"
+              examples:
+                flightsList:
+                  value:
+                    - number: KA924
+                      route_id: LHR-SFO
+                      scheduled_departure: "2024-03-20T09:12:28Z"
+                      scheduled_arrival: "2024-03-20T19:12:28Z"
+                    - number: KA925
+                      route_id: SFO-LHR
+                      scheduled_departure: "2024-03-21T09:12:28Z"
+                      scheduled_arrival: "2024-03-21T19:12:28Z"
+    options:
+      summary: CORS preflight for /flights
+      operationId: corsFlights
+      security: []
+      responses:
+        "200":
+          description: CORS preflight
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+                example: "*"
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+                example: GET,OPTIONS
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+                example: Content-Type,Authorization
+          content: {}
+
+  /flights/{flightNumber}:
+    get:
+      tags:
+        - flight-data
+      summary: Get a specific flight by flight number
+      operationId: getFlightByNumber
+      parameters:
+        - name: flightNumber
+          in: path
+          description: The flight number
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Successful response with the requested flight
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Flight"
+              examples:
+                flight:
+                  value:
+                    number: KA924
+                    route_id: LHR-SFO
+                    scheduled_departure: "2024-03-20T09:12:28Z"
+                    scheduled_arrival: "2024-03-20T19:12:28Z"
+        "404":
+          description: Flight not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+    options:
+      summary: CORS preflight for /flights/{flightNumber}
+      operationId: corsFlightByNumber
+      security: []
+      parameters:
+        - name: flightNumber
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: CORS preflight
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+                example: "*"
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+                example: GET,OPTIONS
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+                example: Content-Type,Authorization
+          content: {}
+
+  /flights/{flightNumber}/details:
+    get:
+      tags:
+        - flight-data
+      summary: Fetch more details about a flight
+      operationId: getFlightDetails
+      parameters:
+        - name: flightNumber
+          in: path
+          description: The flight number
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Successful response with the requested flight details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FlightDetails"
+        "404":
+          description: Flight not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+    options:
+      summary: CORS preflight for /flights/{flightNumber}/details
+      operationId: corsFlightDetails
+      security: []
+      parameters:
+        - name: flightNumber
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: CORS preflight
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+                example: "*"
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+                example: GET,OPTIONS
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+                example: Content-Type,Authorization
+          content: {}
+
+components:
+  schemas:
+    Flight:
+      type: object
+      properties:
+        number:
+          type: string
+        route_id:
+          type: string
+        scheduled_departure:
+          type: string
+          format: date-time
+        scheduled_arrival:
+          type: string
+          format: date-time
+      required:
+        - number
+        - route_id
+        - scheduled_departure
+        - scheduled_arrival
+    FlightDetails:
+      type: object
+      properties:
+        flight_number:
+          type: string
+        in_flight_entertainment:
+          type: boolean
+        meal_options:
+          type: array
+          items:
+            type: string
+        aircraft_type:
+          type: string
+      required:
+        - flight_number
+        - in_flight_entertainment
+        - meal_options
+        - aircraft_type
+    ProblemDetails:
+      type: object
+      properties:
+        message:
+          type: string
+      required:
+        - message
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: flight-data

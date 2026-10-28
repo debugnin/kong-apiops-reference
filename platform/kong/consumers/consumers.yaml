@@ -1,0 +1,8 @@
+_format_version: "3.0"
+consumers:
+  - username: kongair-web
+    custom_id: kongair-web
+  - username: kongair-mobile
+    custom_id: kongair-mobile
+  - username: kongair-partner-dev
+    custom_id: kongair-partner-dev

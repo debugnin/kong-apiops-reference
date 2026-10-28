@@ -1,0 +1,44 @@
+_format_version: "3.0"
+
+plugins:
+  # Caps inbound request bodies at 5 MiB gateway-wide. Kong's megabytes
+  # unit is 2^20, so 5 is 5,242,880 bytes. Inbound requests only —
+  # response sizes are untouched.
+  #
+  # Applied globally rather than per service so a single limit covers every
+  # requestor and cannot drift between routes. If a route later needs more
+  # headroom — batch uploads being the likely case — bind an override of
+  # this plugin at that route rather than raising the global ceiling.
+  #
+  # Kong's own default is 128 MB. A request without a Content-Length header
+  # must be received in full before it can be measured — buffered in memory
+  # up to client_body_buffer_size, then spilled to a temp file — so this
+  # limit also bounds what a single request can cost the data plane.
+  #
+  # Rejection status depends on the client: 413 normally, but 417 when the
+  # request carries Expect: 100-continue, which many HTTP clients add
+  # automatically for larger bodies. Both return the same body,
+  # {"message":"Request size limit exceeded"}, and integrators need to
+  # treat them as one condition.
+  #
+  # require_content_length is false, which is only safe from Kong 3.8.0 on,
+  # where bodies with no Content-Length are still measured — the buffered
+  # body, or a stat of nginx's temp file once it spills to disk. On 3.7 and
+  # earlier that fallback is missing and the check is skipped entirely, a
+  # real bypass. Confirm the data planes are 3.8.0 or later; if not, set
+  # this true, noting it still exempts chunked requests and will reject
+  # clients that stream without declaring a length.
+  #
+  # No ordering block, deliberately. Authentication runs first: an
+  # oversized request fails either way, and the requirement is only that
+  # the upstream service never consumes it. Static priority already gives
+  # that order — openid-connect (1050), this plugin (951), aws-lambda
+  # (750) — so the size check always completes before a Lambda invoke. For
+  # the ECS/ALB service the access phase guarantees it outright, since Kong
+  # does not proxy upstream until the phase finishes.
+  - name: request-size-limiting
+    enabled: true
+    config:
+      allowed_payload_size: 5
+      size_unit: megabytes
+      require_content_length: false

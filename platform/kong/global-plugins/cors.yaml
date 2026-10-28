@@ -1,0 +1,23 @@
+_format_version: "3.0"
+
+plugins:
+  - name: cors
+    config:
+      origins:
+        - "*"
+      methods:
+        - GET
+        - POST
+        - PUT
+        - PATCH
+        - DELETE
+        - OPTIONS
+      headers:
+        - Content-Type
+        - Authorization
+        - X-Channel-Type
+        - X-Run-Preflight
+      exposed_headers: []
+      credentials: false
+      max_age: 3600
+      preflight_continue: false

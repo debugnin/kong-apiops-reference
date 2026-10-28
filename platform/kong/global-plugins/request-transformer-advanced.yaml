@@ -1,0 +1,12 @@
+_format_version: "3.0"
+plugins:
+  - name: request-transformer-advanced
+    config:
+      remove:
+        headers:
+          - x-amzn-mtls-clientcert
+          - x-amzn-mtls-clientcert-chain
+          - x-amzn-mtls-clientcert-issuer
+          - x-amzn-mtls-clientcert-serial-number
+          - x-amzn-mtls-clientcert-validity
+          - x-amzn-mtls-clientcert-leaf

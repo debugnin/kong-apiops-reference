@@ -1,0 +1,42 @@
+_format_version: "3.0"
+plugins:
+  - name: pre-function
+    config:
+      access:
+        - |
+          -- Validate OU field for any request with mTLS certificate
+          -- If no certificate present, allow request (for OIDC-only authentication)
+          local subject_dn = kong.request.get_header("X-Amzn-Mtls-Clientcert-Subject")
+          local expected_env = "${ENVIRONMENT_NAME}"
+
+          -- If no certificate header, skip validation (OIDC-only route)
+          if not subject_dn then
+            kong.log.debug("No mTLS certificate provided - allowing OIDC-only authentication")
+            return
+          end
+
+          -- Certificate present - validate
+          kong.log.info("Client certificate subject: ", subject_dn)
+
+          -- Parse OU field from DN (e.g., "CN=kongair-partner,OU=dev,O=KongAir,C=AU")
+          local ou_value = subject_dn:match("OU=([^,]+)")
+
+          if not ou_value then
+            kong.log.warn("No OU field in certificate: ", subject_dn)
+            return kong.response.exit(403, {
+              message = "Certificate must contain Organization Unit (OU) field"
+            })
+          end
+
+          -- Validate OU matches environment
+          if ou_value ~= expected_env then
+            kong.log.warn("OU mismatch: expected '", expected_env, "' but got '", ou_value, "'")
+            return kong.response.exit(403, {
+              message = "Certificate environment mismatch",
+              expected = expected_env,
+              actual = ou_value
+            })
+          end
+
+          -- Log successful validation
+          kong.log.info("Certificate validated. OU matches environment: ", ou_value)

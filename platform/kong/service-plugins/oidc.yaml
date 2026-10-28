@@ -1,0 +1,36 @@
+add-plugins:
+  # Non-mTLS routes: authenticate via Auth0 (client credentials or bearer token)
+  - selectors:
+      - $..services[*].routes[?(@.tags[0] == 'non-mtls')]
+    overwrite: false
+    plugins:
+      - name: openid-connect
+        config:
+          issuer: ${OIDC_ISSUER_AUTH0}
+          token_post_args_names:
+            - audience
+          token_post_args_values:
+            - ${OIDC_AUDIENCE}
+          auth_methods:
+            - bearer
+          bearer_token_param_type:
+            - header
+          scopes: []
+          ssl_verify: true
+
+  # mTLS routes: authenticate via Cognito or Auth0 (client credentials or bearer token)
+  - selectors:
+      - $..services[*].routes[?(@.tags[0] == 'mtls')]
+    overwrite: false
+    plugins:
+      - name: openid-connect
+        config:
+          issuer: ${OIDC_ISSUER_COGNITO}/.well-known/openid-configuration
+          issuers_allowed:
+            - ${OIDC_ISSUER_COGNITO}
+            - ${OIDC_ISSUER_AUTH0}
+          extra_jwks_uris:
+            - ${OIDC_ISSUER_AUTH0}.well-known/jwks.json
+          auth_methods:
+            - bearer
+          ssl_verify: true

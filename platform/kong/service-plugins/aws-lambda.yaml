@@ -1,0 +1,24 @@
+add-plugins:
+  # AWS Lambda plugin — invoked for all routes on Lambda-backed services.
+  # function_name and aws_assume_role_arn are substituted per-service by
+  # the pipeline using AWS_LAMBDA_FUNCTION_ARN and KONG_PLUGIN_IAM_ROLE_ARN.
+  - selectors:
+      - $..services[*]
+    overwrite: false
+    plugins:
+      - name: aws-lambda
+        config:
+          aws_imds_protocol_version: v2
+          aws_assume_role_arn: ${KONG_PLUGIN_IAM_ROLE_ARN}
+          aws_region: ${AWS_REGION}
+          base64_encode_body: false
+          disable_https: false
+          forward_request_body: true
+          forward_request_headers: true
+          forward_request_method: true
+          forward_request_uri: true
+          function_name: ${AWS_LAMBDA_FUNCTION_ARN}
+          invocation_type: RequestResponse
+          is_proxy_integration: true
+          log_type: None
+          ssl_verify: true
