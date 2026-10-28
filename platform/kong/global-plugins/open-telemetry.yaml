@@ -6,7 +6,6 @@ plugins:
       before:
         access:
           - openid-connect
-          - aws-lambda
     config:
       resource_attributes:
         service.name: kong-${PRODUCT_NAME}-${ENVIRONMENT_NAME}

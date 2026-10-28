@@ -6,18 +6,8 @@ definitions:
         oidc: true
         script:
           # Install required tools
-          - apk add --no-cache curl tar gzip jq aws-cli bash python3 py3-yaml
+          - apk add --no-cache curl tar gzip jq aws-cli bash
           - curl -sL https://github.com/kong/deck/releases/download/v1.55.0/deck_1.55.0_linux_amd64.tar.gz -o deck.tar.gz && tar -xf deck.tar.gz && cp deck /usr/local/bin/
-
-          # Example of a service's per-environment overrides, set as Bitbucket
-          # deployment variables rather than hardcoded here. Left as a comment
-          # to illustrate the shape.
-          # - |
-          #   if [ "$BITBUCKET_DEPLOYMENT_ENVIRONMENT" = "DEV" ]; then
-          #     KONGAIR_BOOKINGS_UPSTREAM_TYPE=lambda
-          #     KONGAIR_BOOKINGS_LAMBDA_ARN=arn:aws:lambda:ap-southeast-2:123456789012:function:kongair-bookings-api-dev
-          #     KONGAIR_BOOKINGS_IAM_ROLE_ARN=arn:aws:iam::123456789012:role/kong-kongair-bookings-lambda-invoke-dev
-          #   fi
 
           # Configure AWS OIDC authentication
           - export AWS_DEFAULT_REGION="${AWS_REGION:-ap-southeast-2}"
@@ -39,134 +29,47 @@ definitions:
           # Retrieve Konnect credentials from AWS Secrets Manager
           - |
             set -e
-            echo "========================================"
             echo "Retrieving Konnect credentials from AWS Secrets Manager..."
-            echo "Secret ARN: ${KONNECT_CONTROL_PLANE_SECRET_ARN}"
             SECRET_VALUE=$(aws secretsmanager get-secret-value --secret-id ${KONNECT_CONTROL_PLANE_SECRET_ARN} --query SecretString --output text)
-            echo "Secret retrieved successfully. Parsing JSON fields..."
-            echo "Available keys in secret:"
-            echo "$SECRET_VALUE" | jq -r 'keys[]'
             export KONNECT_TOKEN=$(echo "$SECRET_VALUE" | jq -r '.konnect_token')
             export KONNECT_CONTROL_PLANE_NAME=$(echo "$SECRET_VALUE" | jq -r '.control_plane_name')
-            echo "Validation checks:"
-            [ -z "$KONNECT_TOKEN" ] && echo "❌ Error: KONNECT_TOKEN is empty" && exit 1
-            [ -z "$KONNECT_CONTROL_PLANE_NAME" ] && echo "❌ Error: KONNECT_CONTROL_PLANE_NAME is empty" && exit 1
-            echo "✓ KONNECT_TOKEN retrieved (length: ${#KONNECT_TOKEN} characters)"
-            echo "✓ KONNECT_CONTROL_PLANE_NAME: $KONNECT_CONTROL_PLANE_NAME"
-            echo "Token format check - First 4 chars: ${KONNECT_TOKEN:0:4}... Last 4 chars: ...${KONNECT_TOKEN: -4}"
-            echo "========================================"
+            [ -z "$KONNECT_TOKEN" ] && echo "Error: KONNECT_TOKEN is empty" && exit 1
+            [ -z "$KONNECT_CONTROL_PLANE_NAME" ] && echo "Error: KONNECT_CONTROL_PLANE_NAME is empty" && exit 1
+            echo "✓ Konnect credentials retrieved. Control plane: $KONNECT_CONTROL_PLANE_NAME"
 
           # Validate required OIDC environment variables
           - |
             echo "Validating required OIDC environment variables..."
-            [ -z "$OIDC_ISSUER_AUTH0" ] && echo "Error: OIDC_ISSUER_AUTH0 is not set" && exit 1
-            [ -z "$OIDC_ISSUER_COGNITO" ] && echo "Error: OIDC_ISSUER_COGNITO is not set" && exit 1
+            [ -z "$OIDC_ISSUER" ] && echo "Error: OIDC_ISSUER is not set" && exit 1
             [ -z "$OIDC_AUDIENCE" ] && echo "Error: OIDC_AUDIENCE is not set" && exit 1
             echo "✓ All required OIDC environment variables are set"
 
           # Create temporary directories for configs
-          - mkdir -p /tmp/kong-configs /tmp/plugins /tmp/service-plugins /tmp/global-plugins /tmp/specs
+          - mkdir -p /tmp/kong-configs /tmp/service-plugins /tmp/global-plugins
 
-          # Convert OpenAPI specs to Kong configuration
+          # Pre-process the common OIDC platform plugin (applied to every service)
           - |
-            echo "Converting OpenAPI specs to Kong configuration..."
-
-            # Pre-process common OIDC platform plugins (applied to every service)
-            sed -e "s|\${OIDC_ISSUER_AUTH0}|$OIDC_ISSUER_AUTH0|g" \
-                -e "s|\${OIDC_ISSUER_COGNITO}|$OIDC_ISSUER_COGNITO|g" \
+            sed -e "s|\${OIDC_ISSUER}|$OIDC_ISSUER|g" \
                 -e "s|\${OIDC_AUDIENCE}|$OIDC_AUDIENCE|g" \
                 platform/kong/service-plugins/oidc.yaml > /tmp/service-plugins/oidc.yaml
 
-            # Copy header-cert-auth plugin (applied to mTLS routes)
-            cp platform/kong/service-plugins/header-cert-auth.yaml /tmp/service-plugins/header-cert-auth.yaml
-
-            # Inject CA cert — normalize PEM (handles single-line space-separated storage) and substitute into template
-            python3 -c "import os,re; cert=os.environ.get('MTLS_CA_CERT','').replace('\r','').strip(); body=re.sub(r'-----[^-]+-----|\s','',cert); cert=('-----BEGIN CERTIFICATE-----\n'+'\n'.join(body[i:i+64] for i in range(0,len(body),64))+'\n-----END CERTIFICATE-----') if '\n' not in cert else cert; indented='\n'.join('      '+l for l in cert.splitlines()); tmpl=open('platform/kong/ca-certs/ca-certs.yaml').read(); open('/tmp/ca-certs.yaml','w').write(tmpl.replace('\${MTLS_CA_CERT}', indented))"
-
+          # Convert each service's OpenAPI spec to Kong configuration and
+          # inject the common OIDC plugin. This is the common `deck`
+          # conversion flow every service in this repo goes through:
+          #   deck file openapi2kong  ->  deck file add-plugins
+          - |
+            echo "Converting OpenAPI specs to Kong configuration..."
             for service in services/*/; do
               service_name=$(basename "$service")
               [ ! -f "$service/openapi.yaml" ] && continue
 
               echo "  Processing service: $service_name"
 
-              # Derive env var prefix from service name (uppercase, hyphens to underscores)
-              # e.g. pic -> PIC, pic-upload -> PIC_UPLOAD
-              env_prefix=$(echo "$service_name" | tr '[:lower:]-' '[:upper:]_')
-              upstream_type_var="${env_prefix}_UPSTREAM_TYPE"
-              eval "upstream_type=\${${upstream_type_var}:-ecs}"
-              echo "    upstream_type: $upstream_type (from \$${upstream_type_var})"
-
-              # Substitute this environment's upstream URL into the spec, the same way
-              # the platform plugins above are pre-processed. Keeps one openapi.yaml
-              # across all environments instead of a per-environment copy.
-              upstream_url_var="${env_prefix}_UPSTREAM_URL"
-              eval "upstream_url=\${${upstream_url_var}}"
-              rendered="/tmp/specs/${service_name}-openapi.yaml"
-              if grep -qF "\${${upstream_url_var}}" "$service/openapi.yaml"; then
-                if [ -z "$upstream_url" ]; then
-                  echo "    ✗ ERROR: spec references \${${upstream_url_var}} but \$${upstream_url_var} is not set"
-                  echo "      Add it to the Bitbucket deployment variables for $BITBUCKET_DEPLOYMENT_ENVIRONMENT"
-                  exit 1
-                fi
-                sed "s|\${${upstream_url_var}}|${upstream_url}|g" "$service/openapi.yaml" > "$rendered"
-                echo "    ✓ Upstream URL set from \$${upstream_url_var}: $upstream_url"
-              else
-                cp "$service/openapi.yaml" "$rendered"
-              fi
-
-              # Never deploy a spec with a placeholder left in it — that would point
-              # Kong at a literal ${...} host.
-              if grep -qE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$rendered"; then
-                echo "    ✗ ERROR: unsubstituted placeholders remain in $service_name spec:"
-                grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$rendered" | sort -u | sed 's|^|      - |'
-                exit 1
-              fi
-
-              # Convert OpenAPI spec to Kong deck config
-              deck file openapi2kong --inso-compatible --spec "$rendered" --output-file "/tmp/kong-configs/${service_name}.yaml"
+              deck file openapi2kong --inso-compatible --spec "$service/openapi.yaml" --output-file "/tmp/kong-configs/${service_name}.yaml"
               echo "    ✓ Converted OpenAPI spec to Kong config"
 
-              # Lambda: patch service host to function name and fix path/protocol
-              if [ "$upstream_type" = "lambda" ]; then
-                lambda_arn_var="${env_prefix}_LAMBDA_ARN"
-                iam_role_arn_var="${env_prefix}_IAM_ROLE_ARN"
-                eval "lambda_arn=\${${lambda_arn_var}}"
-                eval "iam_role_arn=\${${iam_role_arn_var}}"
-                if [ -z "$lambda_arn" ] || [ -z "$iam_role_arn" ]; then
-                  echo "    ✗ ERROR: upstream_type is lambda but \$${lambda_arn_var} or \$${iam_role_arn_var} is not set"
-                  exit 1
-                fi
-                lambda_host="${lambda_arn##*:}"
-                printf '_format_version: "3.0"\npatches:\n  - selectors:\n      - $..services[*]\n    values:\n      host: "%s"\n      path: /\n      port: 443\n      protocol: https\n' "$lambda_host" > /tmp/lambda-service-patch.yaml
-                deck file patch -s "/tmp/kong-configs/${service_name}.yaml" /tmp/lambda-service-patch.yaml -o "/tmp/kong-configs/${service_name}.yaml"
-                echo "    ✓ Service host set to Lambda function name: ${lambda_host}"
-              fi
-
-              # Duplicate routes (adds mtls / non-mtls tagged variants)
-              echo "    - Duplicating routes for $service_name"
-              python3 scripts/duplicate-routes.py "/tmp/kong-configs/${service_name}.yaml"
-              echo "    ✓ Routes duplicated successfully"
-
-              # Apply common OIDC plugins from platform (all services)
-              echo "    - Applying common OIDC plugins"
               deck file add-plugins -s "/tmp/kong-configs/${service_name}.yaml" /tmp/service-plugins/oidc.yaml -o "/tmp/kong-configs/${service_name}.yaml"
-              echo "    ✓ Common OIDC plugins applied"
-
-              # Apply header-cert-auth plugin to mTLS routes
-              echo "    - Applying header-cert-auth plugin"
-              deck file add-plugins -s "/tmp/kong-configs/${service_name}.yaml" /tmp/service-plugins/header-cert-auth.yaml -o "/tmp/kong-configs/${service_name}.yaml"
-              echo "    ✓ header-cert-auth plugin applied"
-
-              # Inject aws-lambda plugin from platform for Lambda-backed services
-              if [ "$upstream_type" = "lambda" ]; then
-                echo "    - Injecting aws-lambda plugin from platform"
-                sed -e "s|\${KONG_PLUGIN_IAM_ROLE_ARN}|$iam_role_arn|g" \
-                    -e "s|\${AWS_LAMBDA_FUNCTION_ARN}|$lambda_arn|g" \
-                    -e "s|\${AWS_REGION}|$AWS_REGION|g" \
-                    platform/kong/service-plugins/aws-lambda.yaml > "/tmp/plugins/${service_name}-aws-lambda.yaml"
-                deck file add-plugins -s "/tmp/kong-configs/${service_name}.yaml" "/tmp/plugins/${service_name}-aws-lambda.yaml" -o "/tmp/kong-configs/${service_name}.yaml"
-                echo "    ✓ aws-lambda plugin injected"
-              fi
+              echo "    ✓ Common OIDC plugin applied"
             done
             echo "All services processed successfully"
 
@@ -175,31 +78,28 @@ definitions:
             echo "Processing global plugins with environment substitution..."
             for plugin_file in platform/kong/global-plugins/*.yaml; do
               plugin_name=$(basename "$plugin_file")
-              echo "  Processing global plugin: $plugin_name"
               sed -e "s|\${ENVIRONMENT_NAME}|$ENVIRONMENT_NAME|g" \
                   -e "s|\${PRODUCT_NAME}|$PRODUCT_NAME|g" \
                   "$plugin_file" > "/tmp/global-plugins/$plugin_name"
             done
             echo "✓ Global plugins processed"
 
-          # Merge configurations
+          # Merge configurations: each service's converted config + global
+          # plugins + consumers. This is the same `deck file merge` flow
+          # used to combine any number of independently-owned config files.
           - |
-            echo "=== /tmp/ca-certs.yaml ==="
-            cat /tmp/ca-certs.yaml
-            echo "==========================="
             echo "Merging Kong configurations..."
-            deck file merge /tmp/kong-configs/*.yaml platform/kong/consumers/*.yaml /tmp/global-plugins/*.yaml /tmp/ca-certs.yaml -o /tmp/final-kong.yaml
+            deck file merge /tmp/kong-configs/*.yaml platform/kong/consumers/*.yaml /tmp/global-plugins/*.yaml -o /tmp/final-kong.yaml
             echo "✓ Configuration merge completed"
 
           # Replace NEW_RELIC_API_KEY in merged configuration
           - |
             if [ -n "$NEW_RELIC_API_KEY" ]; then
-              echo "Replacing NEW_RELIC_API_KEY in final configuration..."
               sed -i "s|\${NEW_RELIC_API_KEY}|$NEW_RELIC_API_KEY|g" /tmp/final-kong.yaml
               echo "✓ NEW_RELIC_API_KEY replaced"
             fi
 
-          # Apply patches if they exist
+          # Apply platform patches, if any
           - |
             if [ -f "platform/kong/patches/patches.yaml" ]; then
               echo "Applying patches from platform/kong/patches/patches.yaml..."
@@ -212,35 +112,12 @@ definitions:
 
           # Sync configuration to Kong Konnect
           - |
-            echo "========================================"
             echo "Deploying to Kong Konnect..."
-            echo "Configuration Details:"
-            echo "  - Konnect Address: ${KONNECT_ADDR:-https://au.api.konghq.com}"
-            echo "  - Control Plane Name: $KONNECT_CONTROL_PLANE_NAME"
-            echo "  - Token Length: ${#KONNECT_TOKEN} characters"
-            echo "  - Token Preview: ${KONNECT_TOKEN:0:8}...${KONNECT_TOKEN: -4}"
-            echo "  - deck version: $(deck version)"
-            echo "========================================"
-            echo "Executing deck gateway sync..."
             deck gateway sync /tmp/final-kong.yaml \
               --konnect-addr ${KONNECT_ADDR:-https://au.api.konghq.com} \
               --konnect-control-plane-name "$KONNECT_CONTROL_PLANE_NAME" \
               --konnect-token $KONNECT_TOKEN \
-              --verbose 2 || {
-                echo "========================================"
-                echo "❌ deck gateway sync failed!"
-                echo "Troubleshooting information:"
-                echo "  - Token starts with: ${KONNECT_TOKEN:0:4}"
-                echo "  - Token type check: $(echo $KONNECT_TOKEN | grep -o '^[a-zA-Z0-9_-]*' | head -c 20)"
-                echo "  - Control plane: $KONNECT_CONTROL_PLANE_NAME"
-                echo "  - Konnect addr: ${KONNECT_ADDR:-https://au.api.konghq.com}"
-                echo "Testing Konnect API connectivity..."
-                curl -v -H "Authorization: Bearer $KONNECT_TOKEN" \
-                  "${KONNECT_ADDR:-https://au.api.konghq.com}/v2/control-planes" 2>&1 | head -n 50
-                echo "========================================"
-                exit 1
-              }
-
+              --verbose 2
           - echo "Deployment completed successfully!"
 
           # Copy artifacts to workspace for collection
@@ -254,15 +131,14 @@ definitions:
         oidc: true
         script:
           # Install required tools
-          - apk add --no-cache curl tar gzip jq aws-cli bash python3 py3-yaml
+          - apk add --no-cache curl tar gzip jq aws-cli bash
           - curl -sL https://github.com/kong/deck/releases/download/v1.55.0/deck_1.55.0_linux_amd64.tar.gz -o deck.tar.gz && tar -xf deck.tar.gz && cp deck /usr/local/bin/
 
-            # Configure AWS OIDC authentication
+          # Configure AWS OIDC authentication
           - export AWS_DEFAULT_REGION="${AWS_REGION:-ap-southeast-2}"
           - export AWS_WEB_IDENTITY_TOKEN_FILE=$(pwd)/web-identity-token
           - echo $BITBUCKET_STEP_OIDC_TOKEN > $AWS_WEB_IDENTITY_TOKEN_FILE
           - export AWS_ROLE_SESSION_NAME="bitbucket-${BITBUCKET_BUILD_NUMBER}"
-          - echo "Attempting to assume role ${AWS_ROLE_ARN}"
           - |
             aws sts assume-role-with-web-identity \
               --role-arn "${AWS_ROLE_ARN}" \
@@ -277,166 +153,56 @@ definitions:
           # Retrieve Konnect credentials from AWS Secrets Manager
           - |
             set -e
-            echo "Retrieving Konnect credentials from AWS Secrets Manager..."
             SECRET_VALUE=$(aws secretsmanager get-secret-value --secret-id ${KONNECT_CONTROL_PLANE_SECRET_ARN} --query SecretString --output text)
             export KONNECT_TOKEN=$(echo "$SECRET_VALUE" | jq -r '.konnect_token')
             export KONNECT_CONTROL_PLANE_NAME=$(echo "$SECRET_VALUE" | jq -r '.control_plane_name')
-            echo "Successfully retrieved Konnect credentials"
             [ -z "$KONNECT_TOKEN" ] && echo "Error: KONNECT_TOKEN is empty" && exit 1
             [ -z "$KONNECT_CONTROL_PLANE_NAME" ] && echo "Error: KONNECT_CONTROL_PLANE_NAME is empty" && exit 1
 
           # Validate required OIDC environment variables
           - |
-            echo "Validating required OIDC environment variables..."
-            [ -z "$OIDC_ISSUER_AUTH0" ] && echo "Error: OIDC_ISSUER_AUTH0 is not set" && exit 1
-            [ -z "$OIDC_ISSUER_COGNITO" ] && echo "Error: OIDC_ISSUER_COGNITO is not set" && exit 1
+            [ -z "$OIDC_ISSUER" ] && echo "Error: OIDC_ISSUER is not set" && exit 1
             [ -z "$OIDC_AUDIENCE" ] && echo "Error: OIDC_AUDIENCE is not set" && exit 1
-            echo "✓ All required OIDC environment variables are set"
 
-          # Create temporary directories for configs
-          - mkdir -p /tmp/kong-configs /tmp/plugins /tmp/service-plugins /tmp/global-plugins /tmp/specs
+          - mkdir -p /tmp/kong-configs /tmp/service-plugins /tmp/global-plugins
 
-          # Convert OpenAPI specs to Kong configuration
           - |
-            echo "Converting OpenAPI specs to Kong configuration..."
-
-            # Pre-process common OIDC platform plugins (applied to every service)
-            sed -e "s|\${OIDC_ISSUER_AUTH0}|$OIDC_ISSUER_AUTH0|g" \
-                -e "s|\${OIDC_ISSUER_COGNITO}|$OIDC_ISSUER_COGNITO|g" \
+            sed -e "s|\${OIDC_ISSUER}|$OIDC_ISSUER|g" \
                 -e "s|\${OIDC_AUDIENCE}|$OIDC_AUDIENCE|g" \
                 platform/kong/service-plugins/oidc.yaml > /tmp/service-plugins/oidc.yaml
 
-            # Copy header-cert-auth plugin (applied to mTLS routes)
-            cp platform/kong/service-plugins/header-cert-auth.yaml /tmp/service-plugins/header-cert-auth.yaml
-
-            # Inject CA cert — normalize PEM (handles single-line space-separated storage) and substitute into template
-            python3 -c "import os,re; cert=os.environ.get('MTLS_CA_CERT','').replace('\r','').strip(); body=re.sub(r'-----[^-]+-----|\s','',cert); cert=('-----BEGIN CERTIFICATE-----\n'+'\n'.join(body[i:i+64] for i in range(0,len(body),64))+'\n-----END CERTIFICATE-----') if '\n' not in cert else cert; indented='\n'.join('      '+l for l in cert.splitlines()); tmpl=open('platform/kong/ca-certs/ca-certs.yaml').read(); open('/tmp/ca-certs.yaml','w').write(tmpl.replace('\${MTLS_CA_CERT}', indented))"
-
+          - |
+            echo "Converting OpenAPI specs to Kong configuration..."
             for service in services/*/; do
               service_name=$(basename "$service")
               [ ! -f "$service/openapi.yaml" ] && continue
-
               echo "  Processing service: $service_name"
-
-              # Derive env var prefix from service name (uppercase, hyphens to underscores)
-              # e.g. pic -> PIC, pic-upload -> PIC_UPLOAD
-              env_prefix=$(echo "$service_name" | tr '[:lower:]-' '[:upper:]_')
-              upstream_type_var="${env_prefix}_UPSTREAM_TYPE"
-              eval "upstream_type=\${${upstream_type_var}:-ecs}"
-              echo "    upstream_type: $upstream_type (from \$${upstream_type_var})"
-
-              # Substitute this environment's upstream URL into the spec, the same way
-              # the platform plugins above are pre-processed. Keeps one openapi.yaml
-              # across all environments instead of a per-environment copy.
-              upstream_url_var="${env_prefix}_UPSTREAM_URL"
-              eval "upstream_url=\${${upstream_url_var}}"
-              rendered="/tmp/specs/${service_name}-openapi.yaml"
-              if grep -qF "\${${upstream_url_var}}" "$service/openapi.yaml"; then
-                if [ -z "$upstream_url" ]; then
-                  echo "    ✗ ERROR: spec references \${${upstream_url_var}} but \$${upstream_url_var} is not set"
-                  echo "      Add it to the Bitbucket deployment variables for $BITBUCKET_DEPLOYMENT_ENVIRONMENT"
-                  exit 1
-                fi
-                sed "s|\${${upstream_url_var}}|${upstream_url}|g" "$service/openapi.yaml" > "$rendered"
-                echo "    ✓ Upstream URL set from \$${upstream_url_var}: $upstream_url"
-              else
-                cp "$service/openapi.yaml" "$rendered"
-              fi
-
-              # Never deploy a spec with a placeholder left in it — that would point
-              # Kong at a literal ${...} host.
-              if grep -qE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$rendered"; then
-                echo "    ✗ ERROR: unsubstituted placeholders remain in $service_name spec:"
-                grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' "$rendered" | sort -u | sed 's|^|      - |'
-                exit 1
-              fi
-
-              # Convert OpenAPI spec to Kong deck config
-              deck file openapi2kong --inso-compatible --spec "$rendered" --output-file "/tmp/kong-configs/${service_name}.yaml"
-              echo "    ✓ Converted OpenAPI spec to Kong config"
-
-              # Lambda: patch service host to function name and fix path/protocol
-              if [ "$upstream_type" = "lambda" ]; then
-                lambda_arn_var="${env_prefix}_LAMBDA_ARN"
-                iam_role_arn_var="${env_prefix}_IAM_ROLE_ARN"
-                eval "lambda_arn=\${${lambda_arn_var}}"
-                eval "iam_role_arn=\${${iam_role_arn_var}}"
-                if [ -z "$lambda_arn" ] || [ -z "$iam_role_arn" ]; then
-                  echo "    ✗ ERROR: upstream_type is lambda but \$${lambda_arn_var} or \$${iam_role_arn_var} is not set"
-                  exit 1
-                fi
-                lambda_host="${lambda_arn##*:}"
-                printf '_format_version: "3.0"\npatches:\n  - selectors:\n      - $..services[*]\n    values:\n      host: "%s"\n      path: /\n      port: 443\n      protocol: https\n' "$lambda_host" > /tmp/lambda-service-patch.yaml
-                deck file patch -s "/tmp/kong-configs/${service_name}.yaml" /tmp/lambda-service-patch.yaml -o "/tmp/kong-configs/${service_name}.yaml"
-                echo "    ✓ Service host set to Lambda function name: ${lambda_host}"
-              fi
-
-              # Duplicate routes (adds mtls / non-mtls tagged variants)
-              echo "    - Duplicating routes for $service_name"
-              python3 scripts/duplicate-routes.py "/tmp/kong-configs/${service_name}.yaml"
-              echo "    ✓ Routes duplicated successfully"
-
-              # Apply common OIDC plugins from platform (all services)
-              echo "    - Applying common OIDC plugins"
+              deck file openapi2kong --inso-compatible --spec "$service/openapi.yaml" --output-file "/tmp/kong-configs/${service_name}.yaml"
               deck file add-plugins -s "/tmp/kong-configs/${service_name}.yaml" /tmp/service-plugins/oidc.yaml -o "/tmp/kong-configs/${service_name}.yaml"
-              echo "    ✓ Common OIDC plugins applied"
-
-              # Apply header-cert-auth plugin to mTLS routes
-              echo "    - Applying header-cert-auth plugin"
-              deck file add-plugins -s "/tmp/kong-configs/${service_name}.yaml" /tmp/service-plugins/header-cert-auth.yaml -o "/tmp/kong-configs/${service_name}.yaml"
-              echo "    ✓ header-cert-auth plugin applied"
-
-              # Inject aws-lambda plugin from platform for Lambda-backed services
-              if [ "$upstream_type" = "lambda" ]; then
-                echo "    - Injecting aws-lambda plugin from platform"
-                sed -e "s|\${KONG_PLUGIN_IAM_ROLE_ARN}|$iam_role_arn|g" \
-                    -e "s|\${AWS_LAMBDA_FUNCTION_ARN}|$lambda_arn|g" \
-                    -e "s|\${AWS_REGION}|$AWS_REGION|g" \
-                    platform/kong/service-plugins/aws-lambda.yaml > "/tmp/plugins/${service_name}-aws-lambda.yaml"
-                deck file add-plugins -s "/tmp/kong-configs/${service_name}.yaml" "/tmp/plugins/${service_name}-aws-lambda.yaml" -o "/tmp/kong-configs/${service_name}.yaml"
-                echo "    ✓ aws-lambda plugin injected"
-              fi
             done
-            echo "All services processed successfully"
 
-          # Process global plugins with environment variable substitution
           - |
-            echo "Processing global plugins with environment substitution..."
             for plugin_file in platform/kong/global-plugins/*.yaml; do
               plugin_name=$(basename "$plugin_file")
-              echo "  Processing global plugin: $plugin_name"
               sed -e "s|\${ENVIRONMENT_NAME}|$ENVIRONMENT_NAME|g" \
                   -e "s|\${PRODUCT_NAME}|$PRODUCT_NAME|g" \
                   "$plugin_file" > "/tmp/global-plugins/$plugin_name"
             done
-            echo "✓ Global plugins processed"
 
-          # Merge configurations
           - |
-            echo "=== /tmp/ca-certs.yaml ==="
-            cat /tmp/ca-certs.yaml
-            echo "==========================="
-            echo "Merging Kong configurations..."
-            deck file merge /tmp/kong-configs/*.yaml platform/kong/consumers/*.yaml /tmp/global-plugins/*.yaml /tmp/ca-certs.yaml -o /tmp/final-kong.yaml
-            echo "✓ Configuration merge completed"
+            deck file merge /tmp/kong-configs/*.yaml platform/kong/consumers/*.yaml /tmp/global-plugins/*.yaml -o /tmp/final-kong.yaml
 
-          # Replace NEW_RELIC_API_KEY in merged configuration
           - |
             if [ -n "$NEW_RELIC_API_KEY" ]; then
-              echo "Replacing NEW_RELIC_API_KEY in final configuration..."
               sed -i "s|\${NEW_RELIC_API_KEY}|$NEW_RELIC_API_KEY|g" /tmp/final-kong.yaml
-              echo "✓ NEW_RELIC_API_KEY replaced"
             fi
 
-          # Apply patches if they exist
           - |
             if [ -f "platform/kong/patches/patches.yaml" ]; then
-              echo "Applying patches from platform/kong/patches/patches.yaml..."
               deck file patch -s /tmp/final-kong.yaml platform/kong/patches/patches.yaml --output-file /tmp/final-kong.yaml
             fi
 
-          # Validate the merged configuration
-          - echo "Validating merged Kong configuration"
+          - echo "Validating merged Kong configuration..."
           - deck file validate /tmp/final-kong.yaml
 
           # Show diff between current and proposed configuration
@@ -448,8 +214,6 @@ definitions:
               --konnect-token $KONNECT_TOKEN || echo "Diff completed"
 
           - echo "Validation completed successfully!"
-
-          # Copy artifacts to workspace for collection
           - cp /tmp/final-kong.yaml final-kong-validated.yaml
         artifacts:
           - final-kong-validated.yaml
@@ -457,10 +221,8 @@ definitions:
 pipelines:
   branches:
     # One release branch per environment. Each branch deploys only its own
-    # environment, so a push to releases/qa no longer runs the DEV deploy first.
-    # The spec is shared: services/*/openapi.yaml is identical across
-    # environments, and ${<PREFIX>_UPSTREAM_URL} is substituted from the
-    # deployment variables of whichever environment is being deployed.
+    # environment. services/*/openapi.yaml is identical across environments
+    # — only the Bitbucket deployment variables differ.
     # Promote by merging forward: releases/dev -> releases/qa -> releases/uat -> releases/prd.
     "releases/dev":
       - step:

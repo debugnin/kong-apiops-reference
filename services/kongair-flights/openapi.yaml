@@ -1,9 +1,9 @@
 # OpenAPI spec for the KongAir Flights service (app team owned)
 #
-# This service is ECS/ALB-backed (see README.md at the repo root). The upstream
-# URL differs per environment, so it is written as a placeholder and
-# substituted by the pipeline from KONGAIR_FLIGHTS_UPSTREAM_URL — see
-# docs/QUICKSTART.md.
+# The upstream is httpbin.konghq.com, Kong's public httpbin instance. It
+# echoes back whatever Kong forwards to it, so every route in this spec
+# resolves to a real, reachable backend without standing up a KongAir
+# flights service for the demo.
 openapi: 3.0.3
 info:
   title: KongAir Flights API
@@ -11,8 +11,8 @@ info:
     Provides the scheduled flights for KongAir.
   version: "1.0.0"
 servers:
-  - url: ${KONGAIR_FLIGHTS_UPSTREAM_URL}
-    description: Upstream server for the kongair-flights service
+  - url: https://httpbin.konghq.com
+    description: Demo upstream (httpbin) standing in for the real Flights backend
 paths:
   /flights:
     get:

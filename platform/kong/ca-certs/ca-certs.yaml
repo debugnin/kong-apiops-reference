@@ -1,5 +1,0 @@
-_format_version: "3.0"
-ca_certificates:
-  - id: cddf62fc-a08c-4537-82ed-598ff0cd4836
-    cert: |
-${MTLS_CA_CERT}

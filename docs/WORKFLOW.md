@@ -11,21 +11,18 @@
 │  │                         │  │                             │  │
 │  │  services/<svc>/        │  │  platform/kong/             │  │
 │  │  └─ openapi.yaml        │  │  ├─ service-plugins/        │  │
-│  │                         │  │  │   ├─ oidc.yaml           │  │
-│  │  Bitbucket variables:   │  │  │   └─ aws-lambda.yaml     │  │
-│  │  <PREFIX>_UPSTREAM_TYPE │  │  ├─ global-plugins/         │  │
-│  │  <PREFIX>_LAMBDA_ARN    │  │  ├─ consumers/              │  │
-│  │  <PREFIX>_IAM_ROLE_ARN  │  │  └─ patches/                │  │
+│  │                         │  │  │   └─ oidc.yaml           │  │
+│  │  (declares WHAT)        │  │  ├─ global-plugins/         │  │
+│  │                         │  │  ├─ consumers/              │  │
+│  │                         │  │  └─ patches/                │  │
 │  │                         │  │                             │  │
-│  │  (declares WHAT)        │  │  bitbucket-pipelines.yml    │  │
-│  │                         │  │  scripts/                   │  │
-│  │                         │  │                             │  │
+│  │                         │  │  bitbucket-pipelines.yml    │  │
 │  │                         │  │  (decides HOW)              │  │
 │  └─────────────────────────┘  └─────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-In this repo, `kongair-bookings` (Lambda) and `kongair-flights` (ECS/ALB) play the role of two application teams on the left. Everything on the right applies identically to both.
+In this repo, `kongair-bookings` and `kongair-flights` play the role of two application teams on the left. Everything on the right applies identically to both.
 
 ## Pipeline Processing Flow (per service)
 
@@ -34,28 +31,12 @@ In this repo, `kongair-bookings` (Lambda) and `kongair-flights` (ECS/ALB) play t
 │ For each services/<svc>/ directory                               │
 ├──────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  1. Read <PREFIX>_UPSTREAM_TYPE env var                          │
-│     └─► upstream_type: lambda | ecs (default: ecs)             │
-│                                                                  │
-│  2. deck file openapi2kong                                       │
+│  1. deck file openapi2kong                                       │
 │     openapi.yaml ──► /tmp/kong-configs/<svc>.yaml               │
 │                                                                  │
-│  3. (lambda only) Patch service host                            │
-│     └─► host = last segment of lambda_arn                      │
-│         path = /                                                 │
-│                                                                  │
-│  4. scripts/duplicate-routes.py                                  │
-│     Every route ──► non-mtls variant + mtls variant             │
-│                                                                  │
-│  5. deck file add-plugins (all services)                        │
+│  2. deck file add-plugins                                       │
 │     platform/kong/service-plugins/oidc.yaml                     │
-│     └─► non-mtls routes: Auth0 OIDC                            │
-│     └─► mtls routes: Cognito OIDC                              │
-│                                                                  │
-│  6. (lambda only) deck file add-plugins                         │
-│     platform/kong/service-plugins/aws-lambda.yaml               │
-│     └─► function_name = <PREFIX>_LAMBDA_ARN                    │
-│     └─► aws_assume_role_arn = <PREFIX>_IAM_ROLE_ARN            │
+│     └─► OIDC auth applied to every route                       │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
                               │
@@ -66,8 +47,8 @@ In this repo, `kongair-bookings` (Lambda) and `kongair-flights` (ECS/ALB) play t
 │  deck file merge  ──► all service configs                       │
 │       + platform/kong/global-plugins/*.yaml                     │
 │       + platform/kong/consumers/consumers.yaml                  │
-│       + platform/kong/patches/patches.yaml                      │
 │                                                                  │
+│  deck file patch    ──► platform/kong/patches/patches.yaml      │
 │  deck file validate ──► /tmp/final-kong.yaml                    │
 │  deck gateway sync  ──► Kong Konnect                            │
 │                                                                  │
@@ -77,9 +58,11 @@ In this repo, `kongair-bookings` (Lambda) and `kongair-flights` (ECS/ALB) play t
 Concretely, with the two services shipped in this repo:
 
 ```
-services/kongair-bookings/openapi.yaml  ──► Lambda path (steps 1,2,3,4,5,6)
-services/kongair-flights/openapi.yaml   ──► ECS path    (steps 1,2,4,5)
+services/kongair-bookings/openapi.yaml  ──► steps 1, 2
+services/kongair-flights/openapi.yaml   ──► steps 1, 2
 ```
+
+Both resolve to `https://httpbin.konghq.com`, so step 1 converts a real, reachable upstream for each service without any extra setup.
 
 ## Branch-Based Environment Flow
 
@@ -97,28 +80,7 @@ services/kongair-flights/openapi.yaml   ──► ECS path    (steps 1,2,4,5)
 └────────────────────────────────────────────────────────────────┘
 ```
 
-Environment-specific ARNs are stored as Bitbucket deployment variables — there are no environment-specific files in the repository. The pipeline extracts the environment name directly from the branch name.
-
-## mTLS / Non-mTLS Route Splitting
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Original route from OAS: GET /bookings                        │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼ scripts/duplicate-routes.py
-┌──────────────────────────────────────────────────────────────────┐
-│                                                                  │
-│  GET /bookings [tag: non-mtls]       GET /bookings [tag: mtls]  │
-│  Standard route                      Adds header match:         │
-│  OIDC: Auth0                         X-Amzn-Mtls-Clientcert-    │
-│                                      Issuer = <env>             │
-│                                      OIDC: Cognito              │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-The `platform/kong/service-plugins/oidc.yaml` uses JSONPath selectors on route tags to apply the correct OIDC issuer per variant.
+Environment labels (`ENVIRONMENT_NAME`, `PRODUCT_NAME`) and OIDC settings are stored as Bitbucket deployment variables — there are no environment-specific files in the repository. The pipeline extracts the environment name directly from the branch name.
 
 ## Pull Request Validation Flow
 
@@ -131,7 +93,7 @@ The `platform/kong/service-plugins/oidc.yaml` uses JSONPath selectors on route t
         ┌─────────────────────────────────────┐
         │   Validate Configuration            │
         │   • openapi2kong for each service   │
-        │   • add-plugins (oidc + lambda)     │
+        │   • add-plugins (oidc)              │
         │   • merge global configs            │
         │   • deck file validate              │
         └─────────────────────────────────────┘
@@ -209,16 +171,12 @@ Pipeline Step Failure
 
 ### Application team files (per service)
 
-- `services/<svc>/openapi.yaml` — API spec; defines routes and upstream URL (ECS) or placeholder (lambda)
-- Bitbucket deployment variables — `<PREFIX>_UPSTREAM_TYPE`, `<PREFIX>_LAMBDA_ARN`, `<PREFIX>_IAM_ROLE_ARN` (lambda only)
+- `services/<svc>/openapi.yaml` — API spec; defines routes and upstream URL
 
 ### Platform team files
 
 - `platform/kong/service-plugins/oidc.yaml` — OIDC auth injected into every service
-- `platform/kong/service-plugins/aws-lambda.yaml` — Lambda plugin injected into lambda services
-- `platform/kong/service-plugins/header-cert-auth.yaml` — mTLS client-cert auth injected into mtls routes
 - `platform/kong/global-plugins/*.yaml` — Gateway-wide plugins (correlation-id, telemetry, etc.)
 - `platform/kong/consumers/consumers.yaml` — Kong consumers
 - `platform/kong/patches/patches.yaml` — Post-merge patches
-- `scripts/duplicate-routes.py` — mTLS/non-mTLS route duplication
 - `bitbucket-pipelines.yml` — Full pipeline definition

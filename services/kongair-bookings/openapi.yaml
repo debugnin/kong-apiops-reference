@@ -1,8 +1,9 @@
 # OpenAPI spec for the KongAir Bookings service (app team owned)
 #
-# This service is Lambda-backed (see README.md at the repo root). The pipeline
-# overwrites `servers[0].url` with the Lambda function name at deploy time, so
-# the value below is only a placeholder — it is never actually dialled.
+# The upstream is httpbin.konghq.com, Kong's public httpbin instance. It
+# echoes back whatever Kong forwards to it, so every route in this spec
+# resolves to a real, reachable backend without standing up a KongAir
+# bookings service for the demo.
 openapi: 3.0.3
 info:
   title: KongAir Bookings API
@@ -10,7 +11,8 @@ info:
     Lets KongAir customers create and retrieve their flight bookings.
   version: "1.0.0"
 servers:
-  - url: https://placeholder.example.com
+  - url: https://httpbin.konghq.com
+    description: Demo upstream (httpbin) standing in for the real Bookings backend
 paths:
   /bookings:
     get:

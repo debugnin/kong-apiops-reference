@@ -32,10 +32,9 @@ plugins:
   # No ordering block, deliberately. Authentication runs first: an
   # oversized request fails either way, and the requirement is only that
   # the upstream service never consumes it. Static priority already gives
-  # that order — openid-connect (1050), this plugin (951), aws-lambda
-  # (750) — so the size check always completes before a Lambda invoke. For
-  # the ECS/ALB service the access phase guarantees it outright, since Kong
-  # does not proxy upstream until the phase finishes.
+  # that order — openid-connect (1050) runs before this plugin (951) — and
+  # Kong does not proxy upstream until the access phase finishes, so the
+  # size check always completes before the request reaches the backend.
   - name: request-size-limiting
     enabled: true
     config:

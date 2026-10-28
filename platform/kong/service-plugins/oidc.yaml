@@ -1,12 +1,14 @@
 add-plugins:
-  # Non-mTLS routes: authenticate via Auth0 (client credentials or bearer token)
+  # Authenticate every route via OIDC (client credentials or bearer token).
+  # Applied to every service by the pipeline with `deck file add-plugins`,
+  # the same template-substitution pattern used for the global plugins.
   - selectors:
-      - $..services[*].routes[?(@.tags[0] == 'non-mtls')]
+      - $..services[*]
     overwrite: false
     plugins:
       - name: openid-connect
         config:
-          issuer: ${OIDC_ISSUER_AUTH0}
+          issuer: ${OIDC_ISSUER}
           token_post_args_names:
             - audience
           token_post_args_values:
@@ -16,21 +18,4 @@ add-plugins:
           bearer_token_param_type:
             - header
           scopes: []
-          ssl_verify: true
-
-  # mTLS routes: authenticate via Cognito or Auth0 (client credentials or bearer token)
-  - selectors:
-      - $..services[*].routes[?(@.tags[0] == 'mtls')]
-    overwrite: false
-    plugins:
-      - name: openid-connect
-        config:
-          issuer: ${OIDC_ISSUER_COGNITO}/.well-known/openid-configuration
-          issuers_allowed:
-            - ${OIDC_ISSUER_COGNITO}
-            - ${OIDC_ISSUER_AUTH0}
-          extra_jwks_uris:
-            - ${OIDC_ISSUER_AUTH0}.well-known/jwks.json
-          auth_methods:
-            - bearer
           ssl_verify: true
