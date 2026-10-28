@@ -1,49 +1,49 @@
 _format_version: "3.0"
 services:
   - host: httpbin.konghq.com
-    name: KongAir_Flights_API
+    name: Flights_API
     path: /
     port: 443
     protocol: https
     routes:
       - methods:
           - GET
-        name: KongAir_Flights_API-getFlights
+        name: Flights_API-getFlights
         paths:
           - ~/flights$
         regex_priority: 200
         strip_path: false
       - methods:
           - OPTIONS
-        name: KongAir_Flights_API-corsFlights
+        name: Flights_API-corsFlights
         paths:
           - ~/flights$
         regex_priority: 200
         strip_path: false
       - methods:
           - GET
-        name: KongAir_Flights_API-getFlightByNumber
+        name: Flights_API-getFlightByNumber
         paths:
           - ~/flights/(?<flightNumber>[^#?/]+)$
         regex_priority: 100
         strip_path: false
       - methods:
           - OPTIONS
-        name: KongAir_Flights_API-corsFlightByNumber
+        name: Flights_API-corsFlightByNumber
         paths:
           - ~/flights/(?<flightNumber>[^#?/]+)$
         regex_priority: 100
         strip_path: false
       - methods:
           - GET
-        name: KongAir_Flights_API-getFlightDetails
+        name: Flights_API-getFlightDetails
         paths:
           - ~/flights/(?<flightNumber>[^#?/]+)/details$
         regex_priority: 100
         strip_path: false
       - methods:
           - OPTIONS
-        name: KongAir_Flights_API-corsFlightDetails
+        name: Flights_API-corsFlightDetails
         paths:
           - ~/flights/(?<flightNumber>[^#?/]+)/details$
         regex_priority: 100

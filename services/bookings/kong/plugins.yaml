@@ -1,0 +1,74 @@
+# Plugins scoped to the bookings service — owned by the platform team, but
+# kept alongside the service they apply to (services/bookings/kong/), not
+# in a shared platform-wide folder. A plugin that only matters to bookings
+# lives here; a plugin that applies across every service (like
+# correlation-id) lives in platform/kong/plugins/ instead.
+#
+# Three scoping shapes appear below, same mechanism each time — decK's
+# top-level `plugins[].route` / `plugins[].service` foreign keys:
+#
+#   - route-level   (key-auth, two of the rate-limiting-advanced entries):
+#                    `route: <route-name>` — applies to exactly that Route
+#   - service-level (request-size-limiting):
+#                    `service: Bookings_API` — applies to every Route
+#                    under this service, without listing each one
+#
+# key-auth: applied to every route that reads or writes a specific
+# customer's booking (not the CORS preflight routes — those have no
+# customer data and must stay open for browsers to send the preflight at
+# all).
+#
+# rate-limiting-advanced: applied to the two state-changing routes
+# (create/cancel), to protect the upstream from abusive write traffic.
+# GET routes are left unlimited.
+#
+# request-size-limiting: applied once, at the service level, since booking
+# creation accepts a JSON body and is the one place in this repo an
+# oversized payload is actually a concern — one entry covers all six
+# routes under this service, including ones added later.
+_format_version: "3.0"
+plugins:
+  - name: key-auth
+    route: Bookings_API-getBookings
+    config:
+      key_names:
+        - apikey
+  - name: key-auth
+    route: Bookings_API-getBookingByTicketNumber
+    config:
+      key_names:
+        - apikey
+  - name: key-auth
+    route: Bookings_API-createBooking
+    config:
+      key_names:
+        - apikey
+  - name: key-auth
+    route: Bookings_API-cancelBooking
+    config:
+      key_names:
+        - apikey
+  - name: rate-limiting-advanced
+    route: Bookings_API-createBooking
+    config:
+      limit:
+        - 10
+      window_size:
+        - 60
+      sync_rate: -1
+      strategy: local
+  - name: rate-limiting-advanced
+    route: Bookings_API-cancelBooking
+    config:
+      limit:
+        - 10
+      window_size:
+        - 60
+      sync_rate: -1
+      strategy: local
+  - name: request-size-limiting
+    service: Bookings_API
+    config:
+      allowed_payload_size: 1
+      size_unit: megabytes
+      require_content_length: false

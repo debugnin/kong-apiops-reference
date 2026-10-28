@@ -1,0 +1,23 @@
+# Plugins scoped to the flights service — owned by the platform team, but
+# kept alongside the service they apply to (services/flights/kong/), not
+# in a shared platform-wide folder.
+#
+# rate-limiting-advanced: route-level (`route: <route-name>`), applied only
+# to the public listing endpoint, which has no auth in front of it and is
+# the highest-traffic read route in this service. Flight lookups by number
+# and the CORS preflight routes are left unlimited.
+#
+# flights has no key-auth or request-size-limiting entry: flight schedules
+# are public read-only data (no key-auth needed) and every route here is a
+# GET with no request body (no payload-size concern).
+_format_version: "3.0"
+plugins:
+  - name: rate-limiting-advanced
+    route: Flights_API-getFlights
+    config:
+      limit:
+        - 100
+      window_size:
+        - 60
+      sync_rate: -1
+      strategy: local

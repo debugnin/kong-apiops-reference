@@ -1,12 +1,12 @@
-# OpenAPI spec for the KongAir Flights service (app team owned)
+# OpenAPI spec for the Flights service (app team owned)
 #
 # The upstream is httpbin.konghq.com, Kong's public httpbin instance. It
 # echoes back whatever Kong forwards to it, so every route in this spec
-# resolves to a real, reachable backend without standing up a KongAir
+# resolves to a real, reachable backend without standing up a real
 # flights service for the demo.
 openapi: 3.0.3
 info:
-  title: KongAir Flights API
+  title: Flights API
   description: >-
     Provides the scheduled flights for KongAir.
   version: "1.0.0"

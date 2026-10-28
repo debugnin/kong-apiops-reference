@@ -1,21 +1,32 @@
 .DEFAULT_GOAL := help
 
-SERVICES       := bookings kongair-flights
+SERVICES       := bookings flights
 BUILD_DIR      := build
 MERGED_FILE    := $(BUILD_DIR)/deck.yaml
 
-# Every file under platform/kong/plugins/ is picked up automatically —
-# adding a new plugin (global or route-scoped) means adding a file here,
-# not editing this list.
-PLUGIN_FILES    := $(wildcard platform/kong/plugins/*.yaml)
-CONSUMER_FILES  := platform/kong/consumers/consumers.yaml
+# Plugin files are picked up automatically from two places — adding a new
+# plugin file anywhere under either glob needs no Makefile edit:
+#   - platform/kong/plugins/*.yaml      — plugins that aren't owned by one
+#                                          service (currently just the
+#                                          global correlation-id.yaml)
+#   - services/<svc>/kong/plugins.yaml  — plugins scoped to that service's
+#                                          own Routes/Service (route-level
+#                                          or service-level), owned by the
+#                                          platform team but kept alongside
+#                                          the service they apply to
+PLATFORM_PLUGIN_FILES := $(wildcard platform/kong/plugins/*.yaml)
+SERVICE_PLUGIN_FILES  := $(wildcard services/*/kong/plugins.yaml)
+PLUGIN_FILES          := $(PLATFORM_PLUGIN_FILES) $(SERVICE_PLUGIN_FILES)
+CONSUMER_FILES        := platform/kong/consumers/consumers.yaml
 
-# Built up as: one kong.yaml per service (Service + its Routes, nested, as
-# `openapi2kong` naturally produces), then the platform-owned plugin and
-# consumer files. Order does not matter to `deck file merge` (it merges by
-# entity type, not by file position) but keeping app-team files first and
-# platform-team files last makes the ownership split easy to read here.
-SERVICE_FILES   := $(foreach s,$(SERVICES),services/$(s)/kong.yaml)
+# Built up as: one services/<svc>/kong/service.yaml per service (Service +
+# its Routes, nested, as `openapi2kong` naturally produces), then every
+# plugin file (service-scoped and platform-scoped), then the platform
+# team's consumer file. Order does not matter to `deck file merge` (it
+# merges by entity type, not by file position) but keeping app-team files
+# first and platform-team files last makes the ownership split easy to
+# read here.
+SERVICE_FILES   := $(foreach s,$(SERVICES),services/$(s)/kong/service.yaml)
 ALL_FILES       := $(SERVICE_FILES) $(PLUGIN_FILES) $(CONSUMER_FILES)
 
 .PHONY: help generate merge validate diff sync clean all
@@ -26,31 +37,36 @@ help: ## Show this help
 
 ## --- Application team step -------------------------------------------------
 # Each service owns one openapi.yaml. This target is how a new/changed
-# OpenAPI spec turns into the one decK file a service needs: kong.yaml,
-# with the Gateway Service and its Routes nested together exactly the way
-# `deck file openapi2kong` produces them. Run this after editing any
-# services/<name>/openapi.yaml and commit the regenerated file alongside
-# it — that keeps PR diffs showing exactly what routing changed.
-generate: ## Regenerate kong.yaml for every service from its openapi.yaml
+# OpenAPI spec turns into the one decK file a service needs:
+# kong/service.yaml, with the Gateway Service and its Routes nested
+# together exactly the way `deck file openapi2kong` produces them. Run
+# this after editing any services/<name>/openapi.yaml and commit the
+# regenerated file alongside it — that keeps PR diffs showing exactly
+# what routing changed.
+generate: ## Regenerate kong/service.yaml for every service from its openapi.yaml
 	@for svc in $(SERVICES); do \
-		echo "==> generating services/$$svc/kong.yaml"; \
+		echo "==> generating services/$$svc/kong/service.yaml"; \
+		mkdir -p services/$$svc/kong; \
 		deck file openapi2kong --inso-compatible \
 			--spec services/$$svc/openapi.yaml \
 			-o /tmp/$$svc-raw.yaml; \
 		yq eval '{"_format_version": "3.0", "services": [.services[] | del(.plugins, .tags) | .routes = [.routes[] | del(.plugins, .tags)]]}' \
-			/tmp/$$svc-raw.yaml -o yaml > services/$$svc/kong.yaml; \
+			/tmp/$$svc-raw.yaml -o yaml > services/$$svc/kong/service.yaml; \
 		rm -f /tmp/$$svc-raw.yaml; \
 	done
 
 ## --- Platform team step -----------------------------------------------------
-# Plugin config lives in one file per plugin type (platform/kong/plugins/),
-# never nested inside a service/route file. Each entry in those files
-# attaches to a specific Route by name — see the comments in
-# platform/kong/plugins/*.yaml for which routes and why. There is no
-# global/blanket plugin application anywhere in this repo.
+# Plugin config never lives nested inside a service/route file. Instead:
+#   - services/<svc>/kong/plugins.yaml holds every plugin scoped to that
+#     one service — route-level (`route: <name>`) or service-level
+#     (`service: <name>`) — see the comments in each file for which
+#     routes/services and why.
+#   - platform/kong/plugins/*.yaml holds plugins that apply across every
+#     service (no `route:`/`service:` key at all), since those don't
+#     belong to any single service's folder.
 
 ## --- Shared pipeline ---------------------------------------------------------
-merge: ## Merge every service's kong.yaml / plugin file / consumers.yaml into build/deck.yaml
+merge: ## Merge every service's kong/service.yaml / plugin file / consumers.yaml into build/deck.yaml
 	@mkdir -p $(BUILD_DIR)
 	deck file merge $(ALL_FILES) -o $(MERGED_FILE)
 

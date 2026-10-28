@@ -9,7 +9,7 @@ This repo's pipeline is a plain `Makefile`, so it can be invoked identically fro
 For every directory under `services/`:
 
 1. `deck file openapi2kong --inso-compatible --spec services/<svc>/openapi.yaml -o /tmp/<svc>-raw.yaml` — convert the OpenAPI spec to Kong config.
-2. Tidy the raw output with `yq` (strip the empty `plugins: []`/`tags: []` arrays decK adds by default) and write it to `services/<svc>/kong.yaml` — one file per service, with the Gateway Service and its Routes nested together exactly as decK produced them.
+2. Tidy the raw output with `yq` (strip the empty `plugins: []`/`tags: []` arrays decK adds by default) and write it to `services/<svc>/kong/service.yaml` — one file per service, with the Gateway Service and its Routes nested together exactly as decK produced them.
 
 Run this whenever `openapi.yaml` changes, and commit the regenerated file alongside it.
 
@@ -17,25 +17,27 @@ Run this whenever `openapi.yaml` changes, and commit the regenerated file alongs
 
 ```
 deck file merge \
-  services/bookings/kong.yaml \
-  services/kongair-flights/kong.yaml \
-  platform/kong/plugins/key-auth.yaml platform/kong/plugins/rate-limiting.yaml platform/kong/plugins/correlation-id.yaml \
+  services/bookings/kong/service.yaml \
+  services/flights/kong/service.yaml \
+  services/bookings/kong/plugins.yaml \
+  services/flights/kong/plugins.yaml \
+  platform/kong/plugins/correlation-id.yaml \
   platform/kong/consumers/consumers.yaml \
   -o build/deck.yaml
 ```
 
-(The Makefile actually passes `$(wildcard platform/kong/plugins/*.yaml)` so a new plugin file is picked up automatically — nothing to edit here when one is added.)
+(The Makefile actually passes `$(wildcard services/*/kong/plugins.yaml)` plus `$(wildcard platform/kong/plugins/*.yaml)` so a new service's `plugins.yaml`, or a new global plugin file, is picked up automatically — nothing to edit here when one is added.)
 
-`deck file merge` combines entities by type regardless of which file they came from. Each service's `kong.yaml` contributes a Service with its Routes nested inside; most plugin files contribute top-level `plugins:` entries that reference those Routes by name, and any plugin file with no `route:`/`service:` key (like `correlation-id.yaml`) contributes a global entry instead; the output is one flat `build/deck.yaml` with every foreign key resolved.
+`deck file merge` combines entities by type regardless of which file they came from. Each service's `kong/service.yaml` contributes a Service with its Routes nested inside. Each plugin file contributes top-level `plugins:` entries using whichever of three keys fits that plugin: `route: <name>` (route-level, e.g. the `key-auth` entries in `services/bookings/kong/plugins.yaml`), `service: <name>` (service-level, e.g. the `request-size-limiting` entry in that same file), or neither (global, e.g. `platform/kong/plugins/correlation-id.yaml`). The output is one flat `build/deck.yaml` with every foreign key resolved.
 
 ### `make validate`
 
 Runs `make merge`, then `deck file validate build/deck.yaml`. This is **offline** — no connection to Kong — and checks:
 
 - YAML/schema validity of every entity
-- That every foreign key (every `route: <name>` in a route-scoped plugin entry) resolves to something that actually exists in the merged file — entries with no `route:`/`service:` key (global plugins) have nothing to resolve and always pass this check
+- That every foreign key — every `route: <name>` and every `service: <name>` in a plugin entry — resolves to something that actually exists in the merged file. Entries with no `route:`/`service:` key (global plugins) have nothing to resolve and always pass this check.
 
-A typo in a plugin file's `route:` value — pointing at a route name that doesn't exist in any service's `kong.yaml` — fails here, before anything touches a real control plane.
+A typo in a plugin file's `route:` value — pointing at a route name that doesn't exist in any service's `kong/service.yaml` — fails here, before anything touches a real control plane.
 
 ### `make diff` / `make sync`
 
@@ -105,7 +107,7 @@ paths:
           description: OK
 EOF
 
-make generate   # creates services/payments-api/kong.yaml
+make generate   # creates services/payments-api/kong/service.yaml
 make validate   # confirms it merges cleanly with everything else
 
 git add services/payments-api/
@@ -114,13 +116,15 @@ git push origin feature/add-payments-api
 # open a PR — CI runs `make diff` to show the control-plane impact
 ```
 
-No file under `platform/kong/` needs to change unless `listPayments` requires `key-auth` or rate limiting — in which case add exactly one entry, naming `Payments_API-listPayments`, to the relevant plugin file.
+No plugin file needs to exist yet unless `listPayments` requires `key-auth` or rate limiting — in which case add exactly one entry, naming `Payments_API-listPayments`, to a new `services/payments-api/kong/plugins.yaml`.
 
 ## Workflow Example — Attaching a Plugin to One Route
 
 ```bash
-vim platform/kong/plugins/rate-limiting.yaml
+vim services/payments-api/kong/plugins.yaml   # create it if it doesn't exist yet
 # add:
+# _format_version: "3.0"
+# plugins:
 #   - name: rate-limiting-advanced
 #     route: Payments_API-listPayments
 #     config:
@@ -130,27 +134,27 @@ vim platform/kong/plugins/rate-limiting.yaml
 #       strategy: local
 
 make validate   # confirms the route name resolves
-git add platform/kong/plugins/rate-limiting.yaml
+git add services/payments-api/kong/plugins.yaml
 git commit -m "Rate limit payments-api listPayments"
 ```
 
-This is the entire change — no other file is touched, and the plugin applies to exactly one route.
+This is the entire change — no other file is touched, and the plugin applies to exactly one route, in the payments-api service's own folder.
 
 ## Troubleshooting
 
 ### `make validate` fails with a foreign-key error
-`deck file validate` reports exactly which reference is broken (e.g. a plugin's `route:` value). Check for a typo, or that the referenced service's `kong.yaml` was actually regenerated with `make generate` after a rename.
+`deck file validate` reports exactly which reference is broken (e.g. a plugin's `route:` value). Check for a typo, or that the referenced service's `kong/service.yaml` was actually regenerated with `make generate` after a rename.
 
 ### `make generate` output doesn't match what's committed
-`kong.yaml` is generated, deterministic output of `openapi.yaml` — if `make generate` followed by `git diff` shows unexpected changes, either `openapi.yaml` changed and the generated file is now stale (commit the new output), or the generated file was hand-edited out of band (regenerate and commit that instead).
+`kong/service.yaml` is generated, deterministic output of `openapi.yaml` — if `make generate` followed by `git diff` shows unexpected changes, either `openapi.yaml` changed and the generated file is now stale (commit the new output), or the generated file was hand-edited out of band (regenerate and commit that instead).
 
 ### `make sync` removes something unexpectedly
 `deck gateway sync` deletes anything on the control plane that isn't present in the file being synced. If this repo isn't meant to own the *entire* control plane, use `select_tags` to scope `sync`/`diff` to a subset — see [deck's tags documentation](https://developer.konghq.com/deck/gateway/tags/).
 
 ## Best Practices
 
-1. **Never hand-edit `kong.yaml`** — regenerate it with `make generate` from `openapi.yaml`, which stays the single source of truth for routing.
-2. **Every plugin lives in its own file, named by plugin** — selective plugins attach to a route by name; genuinely global plugins (no exceptions, every route) omit `route:`/`service:` entirely instead of using a selector against `$..services[*]` or `$..routes[*]`. Either way, no plugin is nested inside a service's `kong.yaml`.
+1. **Never hand-edit `kong/service.yaml`** — regenerate it with `make generate` from `openapi.yaml`, which stays the single source of truth for routing.
+2. **Every service's plugins live in that service's own `kong/plugins.yaml`; genuinely global plugins live under `platform/kong/plugins/`** — route-scoped and service-scoped entries attach by name (route or service), and genuinely global plugins (no exceptions, every route in every service) omit `route:`/`service:` entirely instead of using a selector against `$..services[*]` or `$..routes[*]`. Either way, no plugin is nested inside a service's `kong/service.yaml`.
 3. **`make validate` before every commit** — it's fully offline and catches broken foreign keys immediately.
 4. **Review `make diff` output, not just the YAML diff** — a small YAML change (e.g. a renamed route) can have a larger control-plane effect than the diff suggests if plugin files still reference the old name.
 
