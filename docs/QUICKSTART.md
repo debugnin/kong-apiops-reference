@@ -1,6 +1,6 @@
 # Quick Start Guide
 
-Get up and running with this repo's `deck` workflow, using the two example services — **KongAir Bookings** and **KongAir Flights**, both backed by [`httpbin.konghq.com`](https://httpbin.konghq.com) — as a walkthrough.
+Get up and running with this repo's `deck` workflow, using the two example services — **Bookings** and **KongAir Flights**, both backed by [`httpbin.konghq.com`](https://httpbin.konghq.com) — as a walkthrough.
 
 ## Prerequisites
 

@@ -8,7 +8,7 @@ This repository is a reference template for managing Kong Gateway configuration 
 4. `deck file merge` combines every service's `kong.yaml` with the platform team's plugin and consumer files into one `build/deck.yaml`.
 5. `deck file validate` checks the merged result offline, then `deck gateway sync` (or `diff`) applies it to Kong Konnect.
 
-The two example services, **KongAir Bookings** and **KongAir Flights**, are fictional — part of the [KongAir](https://github.com/Kong/KongAir) demo airline used across Kong's reference material. Both point at [`httpbin.konghq.com`](https://httpbin.konghq.com), Kong's public httpbin instance, as their upstream, so the workflow in this repo runs against a real, reachable backend rather than a mocked one. Only two plugins are demonstrated — `key-auth` and `rate-limiting-advanced` — each applied to a hand-picked subset of routes to show *selective*, not blanket, application.
+The two example services, **Bookings** and **KongAir Flights**, are fictional — part of the [KongAir](https://github.com/Kong/KongAir) demo airline used across Kong's reference material. Both point at [`httpbin.konghq.com`](https://httpbin.konghq.com), Kong's public httpbin instance, as their upstream, so the workflow in this repo runs against a real, reachable backend rather than a mocked one. Only two plugins are demonstrated — `key-auth` and `rate-limiting-advanced` — each applied to a hand-picked subset of routes to show *selective*, not blanket, application.
 
 ## Ownership Model
 
@@ -27,7 +27,7 @@ Application teams declare _what_ their service is via an OpenAPI spec, and run `
 ```
 .
 ├── services/
-│   ├── kongair-bookings/
+│   ├── bookings/
 │   │   ├── openapi.yaml            # OpenAPI specification (source of truth, app team)
 │   │   └── kong.yaml               # Generated: Gateway Service + its Routes, nested
 │   └── kongair-flights/
@@ -63,7 +63,7 @@ Each file in `platform/kong/plugins/` corresponds to exactly one plugin, and eve
 _format_version: "3.0"
 plugins:
   - name: key-auth
-    route: KongAir_Bookings_API-getBookings
+    route: Bookings_API-getBookings
     config:
       key_names:
         - apikey
@@ -74,7 +74,7 @@ This is deliberately *not* a blanket plugin applied to every service or route (t
 - **The file itself is the inventory.** To know every route that requires `key-auth`, open `key-auth.yaml` — you don't need to grep every service's `kong.yaml` in the repo for a nested `plugins:` block.
 - **Adding a new plugin never touches a service's files.** A platform engineer enabling rate limiting on a new route edits `rate-limiting.yaml` only; the application team's `kong.yaml` is untouched, and `git blame` on it stays about routing, not security policy.
 - **Coverage is explicit and reviewable.** A PR adding an entry to `key-auth.yaml` is a visible, auditable decision ("this route now requires an API key") rather than an implicit side effect of a route inheriting from a service-wide or global plugin.
-- **Plugins can overlap or not apply at all, by design.** In this repo, `KongAir_Bookings_API-createBooking` has *both* `key-auth` and `rate-limiting-advanced` attached (two separate files, same route), while CORS preflight (`OPTIONS`) routes and the public flight-lookup routes have neither. A global plugin can't express that kind of per-route selectivity.
+- **Plugins can overlap or not apply at all, by design.** In this repo, `Bookings_API-createBooking` has *both* `key-auth` and `rate-limiting-advanced` attached (two separate files, same route), while CORS preflight (`OPTIONS`) routes and the public flight-lookup routes have neither. A global plugin can't express that kind of per-route selectivity.
 
 ## The `deck` Conversion Flow
 
@@ -119,7 +119,7 @@ Try it yourself — see [Local Validation](#local-validation) below.
 
 | Service directory | Upstream | Notes |
 |---|---|---|
-| `services/kongair-bookings/` | `https://httpbin.konghq.com` | Create/list/cancel bookings |
+| `services/bookings/` | `https://httpbin.konghq.com` | Create/list/cancel bookings |
 | `services/kongair-flights/` | `https://httpbin.konghq.com` | List/get scheduled flights |
 
 Both specs hardcode `https://httpbin.konghq.com` as `servers[0].url`, so `deck file openapi2kong` derives the Kong service `host`/`protocol`/`port` from the spec directly — no environment-specific substitution needed for this demo.

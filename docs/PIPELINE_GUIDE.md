@@ -17,7 +17,7 @@ Run this whenever `openapi.yaml` changes, and commit the regenerated file alongs
 
 ```
 deck file merge \
-  services/kongair-bookings/kong.yaml \
+  services/bookings/kong.yaml \
   services/kongair-flights/kong.yaml \
   platform/kong/plugins/key-auth.yaml platform/kong/plugins/rate-limiting.yaml \
   platform/kong/consumers/consumers.yaml \

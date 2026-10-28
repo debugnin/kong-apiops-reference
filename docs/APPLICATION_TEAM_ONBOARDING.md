@@ -27,7 +27,7 @@
 └─────────────────────────────────────┴──────────────────────────────────────┘
 ```
 
-This repo ships two example services playing the application-team role: `kongair-bookings` and `kongair-flights`, both pointed at `https://httpbin.konghq.com`. They're referenced throughout this guide as worked examples.
+This repo ships two example services playing the application-team role: `bookings` and `kongair-flights`, both pointed at `https://httpbin.konghq.com`. They're referenced throughout this guide as worked examples.
 
 **Important:** there is no global or automatic plugin applied to every service. If your routes need `key-auth` or rate limiting, you'll need the platform team to add an entry for them in `platform/kong/plugins/`. If they don't, nothing further happens — plugins in this repo are opt-in per route, not opt-out.
 

@@ -30,22 +30,22 @@ Only one side nests: a Service and its Routes live together, nested, in the same
 ## One Service, One File — Service and Routes Stay Nested
 
 ```
-services/kongair-bookings/openapi.yaml
+services/bookings/openapi.yaml
             │
             ▼  deck file openapi2kong --inso-compatible --spec openapi.yaml
                (make generate also tidies the empty plugins:[]/tags:[] arrays)
-┌───────────────────────────────────────────────┐
-│ services/kongair-bookings/kong.yaml             │
-│                                                 │
-│ services:                                      │
-│   - name: KongAir_Bookings_API                  │
-│     host: httpbin.konghq.com                   │
-│     routes:            ◄── nested, same file    │
-│       - name: ...-getBookings                  │
-│       - name: ...-createBooking                 │
-│       - name: ...-cancelBooking                 │
-│       - ...                                     │
-└───────────────────────────────────────────────┘
+┌─────────────────────────────────────┐
+│ services/bookings/kong.yaml           │
+│                                       │
+│ services:                            │
+│   - name: Bookings_API                │
+│     host: httpbin.konghq.com         │
+│     routes:      ◄── nested, same file│
+│       - name: ...-getBookings        │
+│       - name: ...-createBooking       │
+│       - name: ...-cancelBooking       │
+│       - ...                           │
+└─────────────────────────────────────┘
 ```
 
 There's no foreign key between a Service and its own Routes to resolve at merge time — `deck file merge` takes this file as-is, alongside `kongair-flights/kong.yaml`, and concatenates the two `services:` arrays.
@@ -54,18 +54,18 @@ There's no foreign key between a Service and its own Routes to resolve at merge 
 
 ```
 platform/kong/plugins/key-auth.yaml
-┌─────────────────────────────────────────────┐
-│ plugins:                                      │
-│   - name: key-auth                            │
-│     route: KongAir_Bookings_API-getBookings    │ ◄── foreign key, by name
-│     config: {key_names: [apikey]}              │
-│   - name: key-auth                             │
-│     route: KongAir_Bookings_API-createBooking  │
-│     config: {key_names: [apikey]}              │
-└─────────────────────────────────────────────┘
+┌─────────────────────────────────────────┐
+│ plugins:                                  │
+│   - name: key-auth                        │
+│     route: Bookings_API-getBookings        │ ◄── foreign key, by name
+│     config: {key_names: [apikey]}          │
+│   - name: key-auth                         │
+│     route: Bookings_API-createBooking      │
+│     config: {key_names: [apikey]}          │
+└─────────────────────────────────────────┘
 ```
 
-Four routes nested in `kongair-bookings/kong.yaml` get an entry here; two CORS-preflight routes and the entire `kongair-flights` service get none. Nothing in either service's `kong.yaml` changes to make that true — coverage is entirely a property of which routes are *named* in this one plugin file. The same foreign-key mechanism decK uses here is used elsewhere for partial configuration — see [deck's tags documentation](https://developer.konghq.com/deck/gateway/tags/#partial-configuration-and-foreign-keys).
+Four routes nested in `bookings/kong.yaml` get an entry here; two CORS-preflight routes and the entire `kongair-flights` service get none. Nothing in either service's `kong.yaml` changes to make that true — coverage is entirely a property of which routes are *named* in this one plugin file. The same foreign-key mechanism decK uses here is used elsewhere for partial configuration — see [deck's tags documentation](https://developer.konghq.com/deck/gateway/tags/#partial-configuration-and-foreign-keys).
 
 ## Merge + Validate + Sync Flow
 
@@ -74,7 +74,7 @@ Four routes nested in `kongair-bookings/kong.yaml` get an entry here; two CORS-p
 │ make merge                                                         │
 │                                                                    │
 │  deck file merge                                                   │
-│    services/kongair-bookings/kong.yaml                             │
+│    services/bookings/kong.yaml                             │
 │    services/kongair-flights/kong.yaml                              │
 │    platform/kong/plugins/{key-auth,rate-limiting}.yaml            │
 │    platform/kong/consumers/consumers.yaml                         │

@@ -1,12 +1,12 @@
-# OpenAPI spec for the KongAir Bookings service (app team owned)
+# OpenAPI spec for the Bookings service (app team owned)
 #
 # The upstream is httpbin.konghq.com, Kong's public httpbin instance. It
 # echoes back whatever Kong forwards to it, so every route in this spec
-# resolves to a real, reachable backend without standing up a KongAir
+# resolves to a real, reachable backend without standing up a real
 # bookings service for the demo.
 openapi: 3.0.3
 info:
-  title: KongAir Bookings API
+  title: Bookings API
   description: >-
     Lets KongAir customers create and retrieve their flight bookings.
   version: "1.0.0"

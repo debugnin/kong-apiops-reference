@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-SERVICES       := kongair-bookings kongair-flights
+SERVICES       := bookings kongair-flights
 BUILD_DIR      := build
 MERGED_FILE    := $(BUILD_DIR)/deck.yaml
 
