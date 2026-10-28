@@ -10,13 +10,13 @@
 │  │  Application Team         │   │  Platform Team               │    │
 │  │                           │   │                              │    │
 │  │  services/<svc>/          │   │  platform/kong/              │    │
-│  │  ├─ openapi.yaml ◄── source│   │  ├─ plugins/                │    │
-│  │  ├─ service.yaml ◄─ generated│ │  │   ├─ key-auth.yaml       │    │
-│  │  └─ routes.yaml  ◄─ generated│ │  │   └─ rate-limiting.yaml  │    │
-│  │                           │   │  └─ consumers/               │    │
-│  │  (declares WHAT routes    │   │      └─ consumers.yaml       │    │
-│  │   exist, by name)         │   │                              │    │
-│  │                           │   │  (decides WHICH of those     │    │
+│  │  ├─ openapi.yaml ◄─ source │   │  ├─ plugins/                │    │
+│  │  └─ kong.yaml    ◄─ generated│ │  │   ├─ key-auth.yaml       │    │
+│  │      (Service + its       │   │  │   └─ rate-limiting.yaml  │    │
+│  │       Routes, nested)     │   │  └─ consumers/               │    │
+│  │                           │   │      └─ consumers.yaml       │    │
+│  │  (declares WHAT routes    │   │                              │    │
+│  │   exist, by name)         │   │  (decides WHICH of those     │    │
 │  │                           │   │   routes get key-auth /      │    │
 │  │                           │   │   rate limiting, by name)    │    │
 │  │                           │   │                              │    │
@@ -25,56 +25,47 @@
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-Neither side nests inside the other. A plugin file names the routes it applies to; a routes file names the service it belongs to. `deck file merge` is what stitches the two sides back together — see below.
+Only one side nests: a Service and its Routes live together, nested, in the same `kong.yaml` — they come from the same source (`openapi.yaml`) and change together, so there's no foreign key to maintain between them. A plugin file is the side that attaches by name instead, because it's owned by a different team and attaches to a subset of routes that may span multiple services. `deck file merge` is what combines everything into one config — see below.
 
-## The Split: One Service Becomes Two Files
+## One Service, One File — Service and Routes Stay Nested
 
 ```
 services/kongair-bookings/openapi.yaml
             │
             ▼  deck file openapi2kong --inso-compatible --spec openapi.yaml
-┌─────────────────────────────────────────────┐
-│ services:                                    │
-│   - name: KongAir_Bookings_API                │
-│     host: httpbin.konghq.com                 │
-│     routes:            ◄── nested, one file  │
-│       - name: ...-getBookings                │
-│       - name: ...-createBooking               │
-│       - name: ...-cancelBooking               │
-│       - ...                                   │
-└─────────────────────────────────────────────┘
-            │
-            ▼  split with yq (make generate)
-┌───────────────────────────┐   ┌────────────────────────────────────┐
-│ services/kongair-bookings/ │   │ services/kongair-bookings/          │
-│   service.yaml             │   │   routes.yaml                       │
-│                             │   │                                      │
-│ services:                  │   │ routes:                              │
-│   - name: KongAir_Bookings_API│ │   - name: ...-getBookings            │
-│     host: httpbin.konghq.com  │ │     service: {name: KongAir_Bookings_API} │
-│     (no routes key)        │   │   - name: ...-createBooking         │
-│                             │   │     service: {name: KongAir_Bookings_API} │
-└───────────────────────────┘   └────────────────────────────────────┘
+               (make generate also tidies the empty plugins:[]/tags:[] arrays)
+┌───────────────────────────────────────────────┐
+│ services/kongair-bookings/kong.yaml             │
+│                                                 │
+│ services:                                      │
+│   - name: KongAir_Bookings_API                  │
+│     host: httpbin.konghq.com                   │
+│     routes:            ◄── nested, same file    │
+│       - name: ...-getBookings                  │
+│       - name: ...-createBooking                 │
+│       - name: ...-cancelBooking                 │
+│       - ...                                     │
+└───────────────────────────────────────────────┘
 ```
 
-The Route → Service link survives the split as a foreign key (`service: {name: ...}`), which `deck file merge` resolves when it recombines files. This is the same foreign-key mechanism decK uses elsewhere for partial configuration — see [deck's tags documentation](https://developer.konghq.com/deck/gateway/tags/#partial-configuration-and-foreign-keys).
+There's no foreign key between a Service and its own Routes to resolve at merge time — `deck file merge` takes this file as-is, alongside `kongair-flights/kong.yaml`, and concatenates the two `services:` arrays.
 
 ## How a Plugin File Attaches, Without Nesting
 
 ```
 platform/kong/plugins/key-auth.yaml
-┌─────────────────────────────────────────┐
-│ plugins:                                  │
-│   - name: key-auth                        │
-│     route: KongAir_Bookings_API-getBookings│ ◄── foreign key, by name
-│     config: {key_names: [apikey]}          │
-│   - name: key-auth                         │
-│     route: KongAir_Bookings_API-createBooking│
-│     config: {key_names: [apikey]}          │
-└─────────────────────────────────────────┘
+┌─────────────────────────────────────────────┐
+│ plugins:                                      │
+│   - name: key-auth                            │
+│     route: KongAir_Bookings_API-getBookings    │ ◄── foreign key, by name
+│     config: {key_names: [apikey]}              │
+│   - name: key-auth                             │
+│     route: KongAir_Bookings_API-createBooking  │
+│     config: {key_names: [apikey]}              │
+└─────────────────────────────────────────────┘
 ```
 
-Four routes in `kongair-bookings/routes.yaml` get an entry here; two CORS-preflight routes and the entire `kongair-flights` service get none. Nothing in `routes.yaml` or `service.yaml` changes to make that true — coverage is entirely a property of which routes are *named* in this one file.
+Four routes nested in `kongair-bookings/kong.yaml` get an entry here; two CORS-preflight routes and the entire `kongair-flights` service get none. Nothing in either service's `kong.yaml` changes to make that true — coverage is entirely a property of which routes are *named* in this one plugin file. The same foreign-key mechanism decK uses here is used elsewhere for partial configuration — see [deck's tags documentation](https://developer.konghq.com/deck/gateway/tags/#partial-configuration-and-foreign-keys).
 
 ## Merge + Validate + Sync Flow
 
@@ -83,8 +74,8 @@ Four routes in `kongair-bookings/routes.yaml` get an entry here; two CORS-prefli
 │ make merge                                                         │
 │                                                                    │
 │  deck file merge                                                   │
-│    services/kongair-bookings/{service,routes}.yaml                │
-│    services/kongair-flights/{service,routes}.yaml                 │
+│    services/kongair-bookings/kong.yaml                             │
+│    services/kongair-flights/kong.yaml                              │
 │    platform/kong/plugins/{key-auth,rate-limiting}.yaml            │
 │    platform/kong/consumers/consumers.yaml                         │
 │    -o build/deck.yaml                                             │
@@ -96,7 +87,7 @@ Four routes in `kongair-bookings/routes.yaml` get an entry here; two CORS-prefli
 │                                                                    │
 │  deck file validate build/deck.yaml                                │
 │  • schema check                                                   │
-│  • every route:/service: foreign key resolves                    │
+│  • every plugin route: foreign key resolves to a nested Route     │
 └──────────────────────────────────────────────────────────────────┘
                               │
                      ┌────────┴────────┐
@@ -106,7 +97,7 @@ Four routes in `kongair-bookings/routes.yaml` get an entry here; two CORS-prefli
       (read-only preview)      (applies to Konnect)
 ```
 
-Concretely, with the two services shipped in this repo, `build/deck.yaml` ends up with 2 Services, 12 Routes, 3 Consumers, and 7 `plugins:` entries (4 `key-auth`, 3 `rate-limiting-advanced`) — fewer plugin entries than routes, because most routes have none.
+Concretely, with the two services shipped in this repo, `build/deck.yaml` ends up with 2 Services (each with its Routes nested inside, 12 Routes total), 3 Consumers, and 7 top-level `plugins:` entries (4 `key-auth`, 3 `rate-limiting-advanced`) — fewer plugin entries than routes, because most routes have none.
 
 ## Pull Request Validation Flow
 
@@ -151,8 +142,8 @@ make target failure
         │    └─► Check the OpenAPI spec is valid 3.0; openapi2kong reports the exact field
         │
         ├──► make merge / make validate failed
-        │    └─► decK reports the exact broken foreign key — a route: or service: name
-        │        in a plugin/routes file with no matching entity in the merged set
+        │    └─► decK reports the exact broken foreign key — a route: name in a plugin
+        │        file with no matching Route nested in any service's kong.yaml
         │
         └──► make diff / make sync failed (auth)
              └─► Confirm DECK_KONNECT_TOKEN is valid and DECK_KONNECT_CONTROL_PLANE_NAME
@@ -166,8 +157,7 @@ There is no cloud-provider credential exchange step in this repo — authenticat
 ### Application team files (per service)
 
 - `services/<svc>/openapi.yaml` — API spec; source of truth for routes and upstream URL
-- `services/<svc>/service.yaml` — generated, the Gateway Service only
-- `services/<svc>/routes.yaml` — generated, the Routes only, each referencing its Service by name
+- `services/<svc>/kong.yaml` — generated, the Gateway Service with its Routes nested inside
 
 ### Platform team files
 

@@ -7,14 +7,13 @@ MERGED_FILE    := $(BUILD_DIR)/deck.yaml
 PLUGIN_FILES    := platform/kong/plugins/key-auth.yaml platform/kong/plugins/rate-limiting.yaml
 CONSUMER_FILES  := platform/kong/consumers/consumers.yaml
 
-# Built up as: service.yaml + routes.yaml for every service, then the
-# platform-owned plugin and consumer files. Order does not matter to
-# `deck file merge` (it merges by entity type, not by file position) but
-# keeping app-team files first and platform-team files last makes the
-# ownership split easy to read here.
-SERVICE_FILES   := $(foreach s,$(SERVICES),services/$(s)/service.yaml)
-ROUTE_FILES     := $(foreach s,$(SERVICES),services/$(s)/routes.yaml)
-ALL_FILES       := $(SERVICE_FILES) $(ROUTE_FILES) $(PLUGIN_FILES) $(CONSUMER_FILES)
+# Built up as: one kong.yaml per service (Service + its Routes, nested, as
+# `openapi2kong` naturally produces), then the platform-owned plugin and
+# consumer files. Order does not matter to `deck file merge` (it merges by
+# entity type, not by file position) but keeping app-team files first and
+# platform-team files last makes the ownership split easy to read here.
+SERVICE_FILES   := $(foreach s,$(SERVICES),services/$(s)/kong.yaml)
+ALL_FILES       := $(SERVICE_FILES) $(PLUGIN_FILES) $(CONSUMER_FILES)
 
 .PHONY: help generate merge validate diff sync clean all
 
@@ -24,22 +23,20 @@ help: ## Show this help
 
 ## --- Application team step -------------------------------------------------
 # Each service owns one openapi.yaml. This target is how a new/changed
-# OpenAPI spec turns into the two decK files a route needs: a service.yaml
-# (the Gateway Service only) and a routes.yaml (the Routes only, each one
-# pointing back at its Service by name). Run this after editing any
-# services/<name>/openapi.yaml and commit the two generated files alongside
+# OpenAPI spec turns into the one decK file a service needs: kong.yaml,
+# with the Gateway Service and its Routes nested together exactly the way
+# `deck file openapi2kong` produces them. Run this after editing any
+# services/<name>/openapi.yaml and commit the regenerated file alongside
 # it — that keeps PR diffs showing exactly what routing changed.
-generate: ## Regenerate service.yaml + routes.yaml for every service from its openapi.yaml
-	@mkdir -p $(BUILD_DIR)
+generate: ## Regenerate kong.yaml for every service from its openapi.yaml
 	@for svc in $(SERVICES); do \
-		echo "==> generating services/$$svc/{service,routes}.yaml"; \
+		echo "==> generating services/$$svc/kong.yaml"; \
 		deck file openapi2kong --inso-compatible \
 			--spec services/$$svc/openapi.yaml \
-			-o $(BUILD_DIR)/$$svc-raw.yaml; \
-		yq eval '{"_format_version": "3.0", "services": [.services[] | del(.routes, .plugins, .tags)]}' \
-			$(BUILD_DIR)/$$svc-raw.yaml -o yaml > services/$$svc/service.yaml; \
-		yq eval '{"_format_version": "3.0", "routes": [.services[] as $$s | $$s.routes[] | .service = {"name": $$s.name} | del(.plugins, .tags)]}' \
-			$(BUILD_DIR)/$$svc-raw.yaml -o yaml > services/$$svc/routes.yaml; \
+			-o /tmp/$$svc-raw.yaml; \
+		yq eval '{"_format_version": "3.0", "services": [.services[] | del(.plugins, .tags) | .routes = [.routes[] | del(.plugins, .tags)]]}' \
+			/tmp/$$svc-raw.yaml -o yaml > services/$$svc/kong.yaml; \
+		rm -f /tmp/$$svc-raw.yaml; \
 	done
 
 ## --- Platform team step -----------------------------------------------------
@@ -50,7 +47,7 @@ generate: ## Regenerate service.yaml + routes.yaml for every service from its op
 # global/blanket plugin application anywhere in this repo.
 
 ## --- Shared pipeline ---------------------------------------------------------
-merge: ## Merge every service.yaml / routes.yaml / plugin file / consumers.yaml into build/deck.yaml
+merge: ## Merge every service's kong.yaml / plugin file / consumers.yaml into build/deck.yaml
 	@mkdir -p $(BUILD_DIR)
 	deck file merge $(ALL_FILES) -o $(MERGED_FILE)
 

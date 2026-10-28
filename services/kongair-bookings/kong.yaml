@@ -1,0 +1,50 @@
+_format_version: "3.0"
+services:
+  - host: httpbin.konghq.com
+    name: KongAir_Bookings_API
+    path: /
+    port: 443
+    protocol: https
+    routes:
+      - methods:
+          - GET
+        name: KongAir_Bookings_API-getBookings
+        paths:
+          - ~/bookings$
+        regex_priority: 200
+        strip_path: false
+      - methods:
+          - OPTIONS
+        name: KongAir_Bookings_API-corsBookings
+        paths:
+          - ~/bookings$
+        regex_priority: 200
+        strip_path: false
+      - methods:
+          - POST
+        name: KongAir_Bookings_API-createBooking
+        paths:
+          - ~/bookings$
+        regex_priority: 200
+        strip_path: false
+      - methods:
+          - DELETE
+        name: KongAir_Bookings_API-cancelBooking
+        paths:
+          - ~/bookings/(?<ticketNumber>[^#?/]+)$
+        regex_priority: 100
+        strip_path: false
+      - methods:
+          - GET
+        name: KongAir_Bookings_API-getBookingByTicketNumber
+        paths:
+          - ~/bookings/(?<ticketNumber>[^#?/]+)$
+        regex_priority: 100
+        strip_path: false
+      - methods:
+          - OPTIONS
+        name: KongAir_Bookings_API-corsBookingByTicketNumber
+        paths:
+          - ~/bookings/(?<ticketNumber>[^#?/]+)$
+        regex_priority: 100
+        strip_path: false

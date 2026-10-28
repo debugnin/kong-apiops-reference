@@ -8,25 +8,23 @@ This repo's pipeline is a plain `Makefile`, so it can be invoked identically fro
 
 For every directory under `services/`:
 
-1. `deck file openapi2kong --inso-compatible --spec services/<svc>/openapi.yaml -o build/<svc>-raw.yaml` — convert the OpenAPI spec to Kong config.
-2. Split the raw output with `yq` into:
-   - `services/<svc>/service.yaml` — the Service entity only (`host`, `protocol`, `port`, `path`); `routes`, `plugins`, `tags` stripped.
-   - `services/<svc>/routes.yaml` — the Routes only, each with `service: { name: <service-name> }` added so it still resolves back to its Service after merge.
+1. `deck file openapi2kong --inso-compatible --spec services/<svc>/openapi.yaml -o /tmp/<svc>-raw.yaml` — convert the OpenAPI spec to Kong config.
+2. Tidy the raw output with `yq` (strip the empty `plugins: []`/`tags: []` arrays decK adds by default) and write it to `services/<svc>/kong.yaml` — one file per service, with the Gateway Service and its Routes nested together exactly as decK produced them.
 
-Run this whenever `openapi.yaml` changes, and commit the two generated files alongside it.
+Run this whenever `openapi.yaml` changes, and commit the regenerated file alongside it.
 
 ### `make merge`
 
 ```
 deck file merge \
-  services/kongair-bookings/service.yaml services/kongair-bookings/routes.yaml \
-  services/kongair-flights/service.yaml  services/kongair-flights/routes.yaml \
+  services/kongair-bookings/kong.yaml \
+  services/kongair-flights/kong.yaml \
   platform/kong/plugins/key-auth.yaml platform/kong/plugins/rate-limiting.yaml \
   platform/kong/consumers/consumers.yaml \
   -o build/deck.yaml
 ```
 
-`deck file merge` combines entities by type regardless of which file they came from — it doesn't matter that Services, Routes, plugins, and Consumers each live in their own file; the output is one flat `build/deck.yaml` with foreign keys intact.
+`deck file merge` combines entities by type regardless of which file they came from. Each service's `kong.yaml` contributes a Service with its Routes nested inside; the plugin files contribute top-level `plugins:` entries that reference those Routes by name; the output is one flat `build/deck.yaml` with every foreign key resolved.
 
 ### `make validate`
 
@@ -35,7 +33,7 @@ Runs `make merge`, then `deck file validate build/deck.yaml`. This is **offline*
 - YAML/schema validity of every entity
 - That every foreign key (every `route: <name>` in a plugin file, every `service: { name: ... }` in a routes file) resolves to something that actually exists in the merged file
 
-A typo in a plugin file's `route:` value, or a `routes.yaml` pointing at a `service.yaml` that doesn't exist, fails here — before anything touches a real control plane.
+A typo in a plugin file's `route:` value — pointing at a route name that doesn't exist in any service's `kong.yaml` — fails here, before anything touches a real control plane.
 
 ### `make diff` / `make sync`
 
@@ -105,7 +103,7 @@ paths:
           description: OK
 EOF
 
-make generate   # creates services/payments-api/service.yaml + routes.yaml
+make generate   # creates services/payments-api/kong.yaml
 make validate   # confirms it merges cleanly with everything else
 
 git add services/payments-api/
@@ -139,17 +137,17 @@ This is the entire change — no other file is touched, and the plugin applies t
 ## Troubleshooting
 
 ### `make validate` fails with a foreign-key error
-`deck file validate` reports exactly which reference is broken (e.g. a plugin's `route:` value or a route's `service: {name:}` value). Check for a typo, or that the referenced `service.yaml`/`routes.yaml` was actually regenerated with `make generate` after a rename.
+`deck file validate` reports exactly which reference is broken (e.g. a plugin's `route:` value). Check for a typo, or that the referenced service's `kong.yaml` was actually regenerated with `make generate` after a rename.
 
 ### `make generate` output doesn't match what's committed
-`service.yaml`/`routes.yaml` are generated, deterministic output of `openapi.yaml` — if `make generate` followed by `git diff` shows unexpected changes, either `openapi.yaml` changed and the generated files are now stale (commit the new output), or the generated files were hand-edited out of band (regenerate and commit that instead).
+`kong.yaml` is generated, deterministic output of `openapi.yaml` — if `make generate` followed by `git diff` shows unexpected changes, either `openapi.yaml` changed and the generated file is now stale (commit the new output), or the generated file was hand-edited out of band (regenerate and commit that instead).
 
 ### `make sync` removes something unexpectedly
 `deck gateway sync` deletes anything on the control plane that isn't present in the file being synced. If this repo isn't meant to own the *entire* control plane, use `select_tags` to scope `sync`/`diff` to a subset — see [deck's tags documentation](https://developer.konghq.com/deck/gateway/tags/).
 
 ## Best Practices
 
-1. **Never hand-edit `service.yaml` / `routes.yaml`** — regenerate them with `make generate` from `openapi.yaml`, which stays the single source of truth for routing.
+1. **Never hand-edit `kong.yaml`** — regenerate it with `make generate` from `openapi.yaml`, which stays the single source of truth for routing.
 2. **Every plugin attaches to a route by name, in its own file** — no selectors against `$..services[*]` or `$..routes[*]`, no plugin nested inside a service or route file.
 3. **`make validate` before every commit** — it's fully offline and catches broken foreign keys immediately.
 4. **Review `make diff` output, not just the YAML diff** — a small YAML change (e.g. a renamed route) can have a larger control-plane effect than the diff suggests if plugin files still reference the old name.

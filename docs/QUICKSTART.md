@@ -5,7 +5,7 @@ Get up and running with this repo's `deck` workflow, using the two example servi
 ## Prerequisites
 
 - [`deck`](https://developer.konghq.com/deck/installation/) v1.55+
-- [`yq`](https://github.com/mikefarah/yq) (the Go version, `mikefarah/yq`) — used by `make generate` to split `openapi2kong`'s output into `service.yaml`/`routes.yaml`
+- [`yq`](https://github.com/mikefarah/yq) (the Go version, `mikefarah/yq`) — used by `make generate` to tidy `openapi2kong`'s output into `kong.yaml`
 - `make`
 - A Kong Konnect account with a control plane, if you want to run `make diff` / `make sync` against a real control plane. Everything else in this guide works fully offline.
 
@@ -18,7 +18,7 @@ make all       # = make generate + make validate
 cat build/deck.yaml
 ```
 
-`make generate` reads every `services/<svc>/openapi.yaml`, runs `deck file openapi2kong`, and splits the result into `services/<svc>/service.yaml` and `services/<svc>/routes.yaml`. `make validate` then merges those with the platform team's plugin and consumer files into `build/deck.yaml` and validates it offline.
+`make generate` reads every `services/<svc>/openapi.yaml`, runs `deck file openapi2kong`, and writes the result to `services/<svc>/kong.yaml` — one file per service, with the Gateway Service and its Routes nested together exactly as decK produces them. `make validate` then merges those with the platform team's plugin and consumer files into `build/deck.yaml` and validates it offline.
 
 ## Step 2: Deploy the Example Services
 
@@ -60,7 +60,7 @@ paths:
           description: OK
 EOF
 
-make generate   # creates services/my-service/service.yaml + routes.yaml
+make generate   # creates services/my-service/kong.yaml
 git add services/my-service/
 ```
 
@@ -68,7 +68,7 @@ If none of the new routes need `key-auth` or rate limiting, you're done — comm
 
 ## Step 4: Attach a Plugin to Specific Routes
 
-Plugins are never added globally. Open the relevant file under `platform/kong/plugins/` and add an entry naming the exact route(s) that need it — the route names are whatever `make generate` put in that service's `routes.yaml` (pattern: `<ServiceName>-<operationId>`):
+Plugins are never added globally. Open the relevant file under `platform/kong/plugins/` and add an entry naming the exact route(s) that need it — the route names are whatever `make generate` put in that service's `kong.yaml` (pattern: `<ServiceName>-<operationId>`):
 
 ```yaml
 # platform/kong/plugins/key-auth.yaml
@@ -79,7 +79,7 @@ Plugins are never added globally. Open the relevant file under `platform/kong/pl
         - apikey
 ```
 
-Run `make validate` — decK reports a broken foreign key immediately if the route name doesn't match anything in a `routes.yaml`.
+Run `make validate` — decK reports a broken foreign key immediately if the route name doesn't match any route nested in a `kong.yaml`.
 
 ## Step 5: Validate and Open a PR
 
@@ -98,8 +98,7 @@ Open a pull request. In CI, `make diff` (with Konnect credentials set as pipelin
 | File | Owner | Purpose |
 |---|---|---|
 | `services/<svc>/openapi.yaml` | Application team | API specification (source of truth) |
-| `services/<svc>/service.yaml` | Application team | Generated: Gateway Service only |
-| `services/<svc>/routes.yaml` | Application team | Generated: Routes only |
+| `services/<svc>/kong.yaml` | Application team | Generated: Gateway Service + its Routes, nested |
 | `platform/kong/plugins/key-auth.yaml` | Platform team | Every route requiring `key-auth`, by name |
 | `platform/kong/plugins/rate-limiting.yaml` | Platform team | Every route requiring rate limiting, by name |
 | `platform/kong/consumers/consumers.yaml` | Platform team | Kong consumers + credentials |
@@ -108,10 +107,10 @@ Open a pull request. In CI, `make diff` (with Konnect credentials set as pipelin
 ## Troubleshooting
 
 ### `make validate` fails with a foreign key / "not found" error
-A plugin file references a route name that doesn't exist. Check the exact name in the relevant service's `routes.yaml` — it's always `<ServiceName>-<operationId>`, taken verbatim from the OpenAPI spec's `operationId`.
+A plugin file references a route name that doesn't exist. Check the exact name in the relevant service's `kong.yaml` — it's always `<ServiceName>-<operationId>`, taken verbatim from the OpenAPI spec's `operationId`.
 
 ### `make generate` produces a diff you didn't expect
-This means `openapi.yaml` changed since `service.yaml`/`routes.yaml` were last generated. Re-run `make generate` and review the diff — it should be exactly the routing change you made to the spec, nothing else.
+This means `openapi.yaml` changed since `kong.yaml` was last generated. Re-run `make generate` and review the diff — it should be exactly the routing change you made to the spec, nothing else.
 
 ### `make diff` / `make sync` fail with an auth error
 Confirm `DECK_KONNECT_TOKEN` and `DECK_KONNECT_CONTROL_PLANE_NAME` are set and the token is valid for that control plane.
