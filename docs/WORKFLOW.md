@@ -12,13 +12,15 @@
 │  │  services/<svc>/          │   │  platform/kong/              │    │
 │  │  ├─ openapi.yaml ◄─ source │   │  ├─ plugins/                │    │
 │  │  └─ kong.yaml    ◄─ generated│ │  │   ├─ key-auth.yaml       │    │
-│  │      (Service + its       │   │  │   └─ rate-limiting.yaml  │    │
-│  │       Routes, nested)     │   │  └─ consumers/               │    │
-│  │                           │   │      └─ consumers.yaml       │    │
-│  │  (declares WHAT routes    │   │                              │    │
-│  │   exist, by name)         │   │  (decides WHICH of those     │    │
-│  │                           │   │   routes get key-auth /      │    │
-│  │                           │   │   rate limiting, by name)    │    │
+│  │      (Service + its       │   │  │   ├─ rate-limiting.yaml  │    │
+│  │       Routes, nested)     │   │  │   └─ correlation-id.yaml │    │
+│  │                           │   │  └─ consumers/               │    │
+│  │  (declares WHAT routes    │   │      └─ consumers.yaml       │    │
+│  │   exist, by name)         │   │                              │    │
+│  │                           │   │  (decides WHICH routes get   │    │
+│  │                           │   │   key-auth / rate limiting,  │    │
+│  │                           │   │   by name — and which        │    │
+│  │                           │   │   plugins apply globally)    │    │
 │  │                           │   │                              │    │
 │  │                           │   │  Makefile                    │    │
 │  └───────────────────────────┘   └──────────────────────────────┘    │
@@ -67,6 +69,19 @@ platform/kong/plugins/key-auth.yaml
 
 Four routes nested in `bookings/kong.yaml` get an entry here; two CORS-preflight routes and the entire `kongair-flights` service get none. Nothing in either service's `kong.yaml` changes to make that true — coverage is entirely a property of which routes are *named* in this one plugin file. The same foreign-key mechanism decK uses here is used elsewhere for partial configuration — see [deck's tags documentation](https://developer.konghq.com/deck/gateway/tags/#partial-configuration-and-foreign-keys).
 
+## Or No Foreign Key at All — the Global Plugin Pattern
+
+```
+platform/kong/plugins/correlation-id.yaml
+┌─────────────────────────────────────────┐
+│ plugins:                                  │
+│   - name: correlation-id                  │
+│     config: {header_name: Kong-Request-ID}│ ◄── no route:, no service: — global
+└─────────────────────────────────────────┘
+```
+
+No `route:` or `service:` key means decK applies this plugin to every request through every Service and Route in the merged config, with nothing to name. This is the correct shape when a plugin is genuinely universal (request tracing, CORS, logging) — forcing it through the selective, name-every-route pattern above would add a line per route for zero actual selectivity.
+
 ## Merge + Validate + Sync Flow
 
 ```
@@ -74,9 +89,9 @@ Four routes nested in `bookings/kong.yaml` get an entry here; two CORS-preflight
 │ make merge                                                         │
 │                                                                    │
 │  deck file merge                                                   │
-│    services/bookings/kong.yaml                             │
+│    services/bookings/kong.yaml                                     │
 │    services/kongair-flights/kong.yaml                              │
-│    platform/kong/plugins/{key-auth,rate-limiting}.yaml            │
+│    platform/kong/plugins/{key-auth,rate-limiting,correlation-id}.yaml │
 │    platform/kong/consumers/consumers.yaml                         │
 │    -o build/deck.yaml                                             │
 └──────────────────────────────────────────────────────────────────┘
@@ -87,7 +102,8 @@ Four routes nested in `bookings/kong.yaml` get an entry here; two CORS-preflight
 │                                                                    │
 │  deck file validate build/deck.yaml                                │
 │  • schema check                                                   │
-│  • every plugin route: foreign key resolves to a nested Route     │
+│  • every route-scoped plugin's route: foreign key resolves to a   │
+│    nested Route (global plugins have no foreign key to check)     │
 └──────────────────────────────────────────────────────────────────┘
                               │
                      ┌────────┴────────┐
@@ -97,7 +113,7 @@ Four routes nested in `bookings/kong.yaml` get an entry here; two CORS-preflight
       (read-only preview)      (applies to Konnect)
 ```
 
-Concretely, with the two services shipped in this repo, `build/deck.yaml` ends up with 2 Services (each with its Routes nested inside, 12 Routes total), 3 Consumers, and 7 top-level `plugins:` entries (4 `key-auth`, 3 `rate-limiting-advanced`) — fewer plugin entries than routes, because most routes have none.
+Concretely, with the two services shipped in this repo, `build/deck.yaml` ends up with 2 Services (each with its Routes nested inside, 12 Routes total), 3 Consumers, and 8 top-level `plugins:` entries: 4 `key-auth` + 3 `rate-limiting-advanced`, each scoped to one named route, plus 1 `correlation-id` with no route/service scoping at all, applying to every one of the 12 routes.
 
 ## Pull Request Validation Flow
 
@@ -163,5 +179,6 @@ There is no cloud-provider credential exchange step in this repo — authenticat
 
 - `platform/kong/plugins/key-auth.yaml` — every route requiring `key-auth`, named explicitly
 - `platform/kong/plugins/rate-limiting.yaml` — every route requiring rate limiting, named explicitly
+- `platform/kong/plugins/correlation-id.yaml` — applied globally, no route/service scoping
 - `platform/kong/consumers/consumers.yaml` — Kong consumers and their key-auth credentials
 - `Makefile` — `generate` / `merge` / `validate` / `diff` / `sync` targets

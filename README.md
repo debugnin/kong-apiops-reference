@@ -4,11 +4,11 @@ This repository is a reference template for managing Kong Gateway configuration 
 
 1. Each application team owns an `openapi.yaml` for their service.
 2. `deck file openapi2kong` turns that spec into one `kong.yaml` per service — the Gateway Service with its Routes nested inside, exactly as decK produces it.
-3. Each plugin type gets its own file, owned by the platform team, under `platform/kong/plugins/`. A plugin file only contains entries for the specific Routes that need that plugin — there is no global/blanket plugin anywhere in this repo.
+3. Each plugin type gets its own file, owned by the platform team, under `platform/kong/plugins/`. Most of those files contain entries scoped to the specific Routes that need that plugin; one file (`correlation-id.yaml`) is a deliberate counter-example of a genuinely global plugin, with neither pattern hidden inside the other.
 4. `deck file merge` combines every service's `kong.yaml` with the platform team's plugin and consumer files into one `build/deck.yaml`.
 5. `deck file validate` checks the merged result offline, then `deck gateway sync` (or `diff`) applies it to Kong Konnect.
 
-The two example services, **Bookings** and **KongAir Flights**, are fictional — part of the [KongAir](https://github.com/Kong/KongAir) demo airline used across Kong's reference material. Both point at [`httpbin.konghq.com`](https://httpbin.konghq.com), Kong's public httpbin instance, as their upstream, so the workflow in this repo runs against a real, reachable backend rather than a mocked one. Only two plugins are demonstrated — `key-auth` and `rate-limiting-advanced` — each applied to a hand-picked subset of routes to show *selective*, not blanket, application.
+The two example services, **Bookings** and **KongAir Flights**, are fictional — part of the [KongAir](https://github.com/Kong/KongAir) demo airline used across Kong's reference material. Both point at [`httpbin.konghq.com`](https://httpbin.konghq.com), Kong's public httpbin instance, as their upstream, so the workflow in this repo runs against a real, reachable backend rather than a mocked one. Three plugins are demonstrated: `key-auth` and `rate-limiting-advanced`, each applied to a hand-picked subset of routes to show *selective*, not blanket, application; and `correlation-id`, applied globally, to show that the selective pattern is a choice, not a limitation of the tooling.
 
 ## Ownership Model
 
@@ -16,7 +16,7 @@ The two example services, **Bookings** and **KongAir Flights**, are fictional �
 | --------------------- | ----------------------------------------------------------------- |
 | **Application team** | `services/<service>/openapi.yaml` — API specification            |
 | **Application team** | `services/<service>/kong.yaml` — generated, committed             |
-| **Platform team**    | `platform/kong/plugins/*.yaml` — one file per plugin type        |
+| **Platform team**    | `platform/kong/plugins/*.yaml` — one file per plugin type, each either route-scoped or global |
 | **Platform team**    | `platform/kong/consumers/consumers.yaml`                          |
 | **Platform team**    | `Makefile` — the merge/validate/sync pipeline                    |
 
@@ -38,7 +38,8 @@ Application teams declare _what_ their service is via an OpenAPI spec, and run `
 │   └── kong/
 │       ├── plugins/
 │       │   ├── key-auth.yaml           # Every route that needs key-auth, and only those
-│       │   └── rate-limiting.yaml      # Every route that needs rate limiting, and only those
+│       │   ├── rate-limiting.yaml      # Every route that needs rate limiting, and only those
+│       │   └── correlation-id.yaml     # No route:/service: key — applies to every request
 │       └── consumers/
 │           └── consumers.yaml          # Consumers + their key-auth credentials
 │
@@ -54,9 +55,9 @@ Application teams declare _what_ their service is via an OpenAPI spec, and run `
 
 What *does* get its own file is cross-cutting policy — plugins — because those are owned by a different team and attach by name rather than by nesting. See below.
 
-## Why one file per plugin, scoped to specific routes?
+## Why one file per plugin, and two different scoping patterns
 
-Each file in `platform/kong/plugins/` corresponds to exactly one plugin, and every entry in it names the Route it applies to via the top-level `plugins[].route` foreign key — for example:
+Each file in `platform/kong/plugins/` corresponds to exactly one plugin. Most of them name the Route they apply to via the top-level `plugins[].route` foreign key — for example:
 
 ```yaml
 # platform/kong/plugins/key-auth.yaml
@@ -74,7 +75,22 @@ This is deliberately *not* a blanket plugin applied to every service or route (t
 - **The file itself is the inventory.** To know every route that requires `key-auth`, open `key-auth.yaml` — you don't need to grep every service's `kong.yaml` in the repo for a nested `plugins:` block.
 - **Adding a new plugin never touches a service's files.** A platform engineer enabling rate limiting on a new route edits `rate-limiting.yaml` only; the application team's `kong.yaml` is untouched, and `git blame` on it stays about routing, not security policy.
 - **Coverage is explicit and reviewable.** A PR adding an entry to `key-auth.yaml` is a visible, auditable decision ("this route now requires an API key") rather than an implicit side effect of a route inheriting from a service-wide or global plugin.
-- **Plugins can overlap or not apply at all, by design.** In this repo, `Bookings_API-createBooking` has *both* `key-auth` and `rate-limiting-advanced` attached (two separate files, same route), while CORS preflight (`OPTIONS`) routes and the public flight-lookup routes have neither. A global plugin can't express that kind of per-route selectivity.
+- **Plugins can overlap or not apply at all, by design.** In this repo, `Bookings_API-createBooking` has *both* `key-auth` and `rate-limiting-advanced` attached (two separate files, same route), while CORS preflight (`OPTIONS`) routes and the public flight-lookup routes have neither. A route-scoped plugin can express that kind of per-route selectivity; a global plugin, by design, cannot.
+
+But not every plugin should be selective. `platform/kong/plugins/correlation-id.yaml` is the other valid shape: a `plugins:` entry with **no** `route:` or `service:` key at all, which decK treats as applying globally, to every request through every service:
+
+```yaml
+# platform/kong/plugins/correlation-id.yaml
+_format_version: "3.0"
+plugins:
+  - name: correlation-id
+    config:
+      header_name: Kong-Request-ID
+      generator: uuid#counter
+      echo_downstream: true
+```
+
+Request tracing is a textbook case for this: every request should get a correlation ID, so there's no selectivity to express — scoping it per route would just mean listing every route in the repo, with no benefit. Other common plugins that are usually global rather than selective: CORS, OpenTelemetry/logging, and request-size-limiting. The two patterns aren't in tension — the choice of global vs. route-scoped is made once per plugin, based on whether "every route, no exceptions" is actually true for it, and either way it still lives in its own file, named by plugin, never nested inside a service's `kong.yaml`.
 
 ## The `deck` Conversion Flow
 
@@ -138,20 +154,24 @@ Both specs hardcode `https://httpbin.konghq.com` as `servers[0].url`, so `deck f
 | `GET /flights/{flightNumber}/details` | — | — |
 | `OPTIONS /flights*` (CORS preflight) | — | — |
 
+`correlation-id` isn't in the table above because it isn't selective — it applies to every row, including both CORS preflight routes, with no entry naming any of them.
+
 Booking routes carry customer data, so every non-preflight booking route requires `key-auth`. Flight schedules are public read-only data, so none of them require auth — but the top-level listing endpoint (`GET /flights`) is rate limited since it's the highest-traffic, unauthenticated route. The two state-changing booking routes (`createBooking`, `cancelBooking`) are rate limited to protect the upstream from abusive write traffic. This spread is intentional: it shows plugins stacking on one route, applying to only one service, and not applying at all — all from three small files.
 
 ## Adding a New Service
 
 1. Create `services/my-service/openapi.yaml` with `servers[0].url` set to your upstream.
 2. Run `make generate` — commit the resulting `services/my-service/kong.yaml`.
-3. If any of its routes need `key-auth` or rate limiting, add entries (by route name) to the relevant file in `platform/kong/plugins/`. If not, add nothing — there is no default/global plugin to opt out of.
+3. If any of its routes need `key-auth` or rate limiting, add entries (by route name) to the relevant file in `platform/kong/plugins/`. If not, add nothing for those two — there's no default to opt out of. Globally-applied plugins like `correlation-id` already cover the new service automatically, since they have no route/service scoping to extend.
 4. `make validate` locally, then open a PR. `make diff` in CI shows the control-plane impact before merge.
 
 ## Adding a New Plugin
 
 1. Create `platform/kong/plugins/<plugin-name>.yaml` with `plugins:` at the top level.
-2. Add one entry per Route that needs it, using `route: <route-name>` (the same name decK generated under that service's `routes:` array in `kong.yaml`).
-3. `make validate` — decK will report a broken foreign key if a route name is misspelled or doesn't exist yet.
+2. Decide which pattern it needs:
+   - **Selective** (most plugins): add one entry per Route that needs it, using `route: <route-name>` (the same name decK generated under that service's `routes:` array in `kong.yaml`).
+   - **Global** (plugins that truly apply everywhere, e.g. tracing, CORS): add one entry with no `route:` or `service:` key at all — see `correlation-id.yaml`.
+3. `make validate` — for the selective pattern, decK will report a broken foreign key if a route name is misspelled or doesn't exist yet.
 
 ## Local Validation
 

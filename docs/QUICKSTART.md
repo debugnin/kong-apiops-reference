@@ -68,7 +68,7 @@ If none of the new routes need `key-auth` or rate limiting, you're done — comm
 
 ## Step 4: Attach a Plugin to Specific Routes
 
-Plugins are never added globally. Open the relevant file under `platform/kong/plugins/` and add an entry naming the exact route(s) that need it — the route names are whatever `make generate` put in that service's `kong.yaml` (pattern: `<ServiceName>-<operationId>`):
+`key-auth` and rate limiting are never added globally — they're opt-in per route. Open the relevant file under `platform/kong/plugins/` and add an entry naming the exact route(s) that need it — the route names are whatever `make generate` put in that service's `kong.yaml` (pattern: `<ServiceName>-<operationId>`). (Some plugins, like `platform/kong/plugins/correlation-id.yaml`, are the other valid pattern: no `route:`/`service:` key at all, meaning they apply to every route automatically. Use that shape only when a plugin genuinely has no exceptions.)
 
 ```yaml
 # platform/kong/plugins/key-auth.yaml
@@ -101,6 +101,7 @@ Open a pull request. In CI, `make diff` (with Konnect credentials set as pipelin
 | `services/<svc>/kong.yaml` | Application team | Generated: Gateway Service + its Routes, nested |
 | `platform/kong/plugins/key-auth.yaml` | Platform team | Every route requiring `key-auth`, by name |
 | `platform/kong/plugins/rate-limiting.yaml` | Platform team | Every route requiring rate limiting, by name |
+| `platform/kong/plugins/correlation-id.yaml` | Platform team | Applied globally, no route/service scoping |
 | `platform/kong/consumers/consumers.yaml` | Platform team | Kong consumers + credentials |
 | `Makefile` | Platform team | `generate` / `merge` / `validate` / `diff` / `sync` targets |
 

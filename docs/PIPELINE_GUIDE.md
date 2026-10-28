@@ -19,19 +19,21 @@ Run this whenever `openapi.yaml` changes, and commit the regenerated file alongs
 deck file merge \
   services/bookings/kong.yaml \
   services/kongair-flights/kong.yaml \
-  platform/kong/plugins/key-auth.yaml platform/kong/plugins/rate-limiting.yaml \
+  platform/kong/plugins/key-auth.yaml platform/kong/plugins/rate-limiting.yaml platform/kong/plugins/correlation-id.yaml \
   platform/kong/consumers/consumers.yaml \
   -o build/deck.yaml
 ```
 
-`deck file merge` combines entities by type regardless of which file they came from. Each service's `kong.yaml` contributes a Service with its Routes nested inside; the plugin files contribute top-level `plugins:` entries that reference those Routes by name; the output is one flat `build/deck.yaml` with every foreign key resolved.
+(The Makefile actually passes `$(wildcard platform/kong/plugins/*.yaml)` so a new plugin file is picked up automatically — nothing to edit here when one is added.)
+
+`deck file merge` combines entities by type regardless of which file they came from. Each service's `kong.yaml` contributes a Service with its Routes nested inside; most plugin files contribute top-level `plugins:` entries that reference those Routes by name, and any plugin file with no `route:`/`service:` key (like `correlation-id.yaml`) contributes a global entry instead; the output is one flat `build/deck.yaml` with every foreign key resolved.
 
 ### `make validate`
 
 Runs `make merge`, then `deck file validate build/deck.yaml`. This is **offline** — no connection to Kong — and checks:
 
 - YAML/schema validity of every entity
-- That every foreign key (every `route: <name>` in a plugin file, every `service: { name: ... }` in a routes file) resolves to something that actually exists in the merged file
+- That every foreign key (every `route: <name>` in a route-scoped plugin entry) resolves to something that actually exists in the merged file — entries with no `route:`/`service:` key (global plugins) have nothing to resolve and always pass this check
 
 A typo in a plugin file's `route:` value — pointing at a route name that doesn't exist in any service's `kong.yaml` — fails here, before anything touches a real control plane.
 
@@ -148,7 +150,7 @@ This is the entire change — no other file is touched, and the plugin applies t
 ## Best Practices
 
 1. **Never hand-edit `kong.yaml`** — regenerate it with `make generate` from `openapi.yaml`, which stays the single source of truth for routing.
-2. **Every plugin attaches to a route by name, in its own file** — no selectors against `$..services[*]` or `$..routes[*]`, no plugin nested inside a service or route file.
+2. **Every plugin lives in its own file, named by plugin** — selective plugins attach to a route by name; genuinely global plugins (no exceptions, every route) omit `route:`/`service:` entirely instead of using a selector against `$..services[*]` or `$..routes[*]`. Either way, no plugin is nested inside a service's `kong.yaml`.
 3. **`make validate` before every commit** — it's fully offline and catches broken foreign keys immediately.
 4. **Review `make diff` output, not just the YAML diff** — a small YAML change (e.g. a renamed route) can have a larger control-plane effect than the diff suggests if plugin files still reference the old name.
 

@@ -4,7 +4,10 @@ SERVICES       := bookings kongair-flights
 BUILD_DIR      := build
 MERGED_FILE    := $(BUILD_DIR)/deck.yaml
 
-PLUGIN_FILES    := platform/kong/plugins/key-auth.yaml platform/kong/plugins/rate-limiting.yaml
+# Every file under platform/kong/plugins/ is picked up automatically —
+# adding a new plugin (global or route-scoped) means adding a file here,
+# not editing this list.
+PLUGIN_FILES    := $(wildcard platform/kong/plugins/*.yaml)
 CONSUMER_FILES  := platform/kong/consumers/consumers.yaml
 
 # Built up as: one kong.yaml per service (Service + its Routes, nested, as

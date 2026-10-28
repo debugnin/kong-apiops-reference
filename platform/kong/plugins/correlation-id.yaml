@@ -1,0 +1,26 @@
+# correlation-id — an example of a *common* plugin, applied globally.
+#
+# This is the other valid pattern alongside key-auth.yaml / rate-limiting.yaml:
+# an entry here has no `route:` or `service:` key at all, so decK treats it
+# as global — it runs on every request through every service and route in
+# this repo, with no per-route selection needed. Request tracing headers are
+# a textbook case for this: every single request should get one, so scoping
+# it per-route would just mean listing every route in the repo for no benefit.
+#
+# Contrast this with key-auth.yaml and rate-limiting.yaml, where leaving out
+# the route: key isn't an option — those two are deliberately selective, not
+# global, because not every route should require an API key or be rate
+# limited. Whether a plugin belongs in this file (global) or in a file with
+# explicit route: entries (selective) is a one-time decision made when the
+# plugin is introduced, driven by whether "every route, no exceptions" is
+# actually true for it.
+#
+# Other common candidates for this same global pattern: request/response
+# logging, OpenTelemetry tracing, CORS, and request-size-limiting.
+_format_version: "3.0"
+plugins:
+  - name: correlation-id
+    config:
+      header_name: Kong-Request-ID
+      generator: uuid#counter
+      echo_downstream: true
