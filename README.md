@@ -1,73 +1,127 @@
-# Kong Konnect APIOps Pipeline Reference
+# Kong Konnect APIOps Reference
 
-This repository is a reference template for managing Kong Gateway configuration via an APIOps pipeline, using `deck` and a Bitbucket Pipelines workflow. It's a minimal demo of the common `deck` conversion flow — `openapi2kong` → `add-plugins` → `merge` → `validate` → `sync`/`diff` — and of the ownership boundary between application teams and the platform team.
+This repository is a reference template for managing Kong Gateway configuration with `deck`, driven by a plain `Makefile` rather than any particular CI vendor's pipeline syntax. It demonstrates one specific, opinionated best-practice workflow:
 
-The two example services, **KongAir Bookings** and **KongAir Flights**, are fictional — part of the [KongAir](https://github.com/Kong/KongAir) demo airline used across Kong's reference material. Both point at [`httpbin.konghq.com`](https://httpbin.konghq.com), Kong's public httpbin instance, as their upstream, so the pipeline in this repo deploys against a real, reachable backend rather than a mocked one.
+1. Each application team owns an `openapi.yaml` for their service.
+2. `deck file openapi2kong` turns that spec into Kong config, which is then split into exactly two files: **`service.yaml`** (the Gateway Service) and **`routes.yaml`** (the Routes) — never one combined file.
+3. Each plugin type gets its own file, owned by the platform team, under `platform/kong/plugins/`. A plugin file only contains entries for the specific Routes that need that plugin — there is no global/blanket plugin anywhere in this repo.
+4. `deck file merge` combines every service's `service.yaml` + `routes.yaml` with the platform team's plugin and consumer files into one `build/deck.yaml`.
+5. `deck file validate` checks the merged result offline, then `deck gateway sync` (or `diff`) applies it to Kong Konnect.
+
+The two example services, **KongAir Bookings** and **KongAir Flights**, are fictional — part of the [KongAir](https://github.com/Kong/KongAir) demo airline used across Kong's reference material. Both point at [`httpbin.konghq.com`](https://httpbin.konghq.com), Kong's public httpbin instance, as their upstream, so the workflow in this repo runs against a real, reachable backend rather than a mocked one. Only two plugins are demonstrated — `key-auth` and `rate-limiting-advanced` — each applied to a hand-picked subset of routes to show *selective*, not blanket, application.
 
 ## Ownership Model
 
-| Owner                | Files                                                     |
-| --------------------- | --------------------------------------------------------- |
-| **Application team** | `services/<service>/openapi.yaml` — API specification     |
-| **Platform team**    | `platform/kong/**` — all Kong plugin and config templates |
-| **Platform team**    | `bitbucket-pipelines.yml` — pipeline definition           |
+| Owner                | Files                                                           |
+| --------------------- | ----------------------------------------------------------------- |
+| **Application team** | `services/<service>/openapi.yaml` — API specification            |
+| **Application team** | `services/<service>/service.yaml`, `routes.yaml` — generated, committed |
+| **Platform team**    | `platform/kong/plugins/*.yaml` — one file per plugin type        |
+| **Platform team**    | `platform/kong/consumers/consumers.yaml`                          |
+| **Platform team**    | `Makefile` — the merge/validate/sync pipeline                    |
 
-Application teams declare _what_ their service is via an OpenAPI spec. The platform team owns everything about _how_ that spec becomes Kong configuration — authentication, logging, rate limiting, telemetry — via the plugin templates in `platform/kong/`.
+Application teams declare _what_ their service is via an OpenAPI spec, and run `make generate` to turn it into `service.yaml`/`routes.yaml`, which are committed so PRs show exactly what routing changed. The platform team owns everything about _which routes get which cross-cutting behaviour_ — auth, rate limiting — entirely in `platform/kong/plugins/`, without ever editing a service's files.
 
 ## Repository Structure
 
 ```
 .
 ├── services/
-│   ├── kongair-bookings/           # Service example #1
-│   │   └── openapi.yaml            # OpenAPI specification (app team)
-│   └── kongair-flights/            # Service example #2
-│       └── openapi.yaml
+│   ├── kongair-bookings/
+│   │   ├── openapi.yaml            # OpenAPI specification (source of truth, app team)
+│   │   ├── service.yaml            # Generated: Gateway Service only
+│   │   └── routes.yaml             # Generated: Routes only, each referencing
+│   │                                 #   its service by name (service: {name: ...})
+│   └── kongair-flights/
+│       ├── openapi.yaml
+│       ├── service.yaml
+│       └── routes.yaml
 │
 ├── platform/
 │   └── kong/
-│       ├── service-plugins/
-│       │   └── oidc.yaml           # OIDC auth — applied to every service
-│       ├── global-plugins/         # Gateway-wide plugins
-│       │   ├── correlation-id.yaml
-│       │   ├── cors.yaml
-│       │   ├── file-log.yaml
-│       │   ├── open-telemetry.yaml
-│       │   ├── rate-limiting-advanced.yaml
-│       │   └── request-size-limiting.yaml       # 5 MiB inbound body cap
-│       ├── consumers/
-│       │   └── consumers.yaml
-│       └── patches/
-│           └── patches.yaml
+│       ├── plugins/
+│       │   ├── key-auth.yaml           # Every route that needs key-auth, and only those
+│       │   └── rate-limiting.yaml      # Every route that needs rate limiting, and only those
+│       └── consumers/
+│           └── consumers.yaml          # Consumers + their key-auth credentials
 │
-└── bitbucket-pipelines.yml
+├── build/                          # `make merge` output — gitignored
+│   └── deck.yaml
+│
+└── Makefile
 ```
+
+## Why split `service.yaml` and `routes.yaml` into separate files?
+
+`deck file openapi2kong` emits one file with each Route nested inside its Service. That's fine for a one-off conversion, but this repo splits the result into two files per service and keeps them that way, because:
+
+- **decK doesn't require nesting.** A Route can live at the top level of its own file and point back at its Service with a foreign key — `service: { name: KongAir_Bookings_API }`. `deck file merge` resolves that reference across files, so splitting costs nothing at merge time (see [`deck gateway tags`](https://developer.konghq.com/deck/gateway/tags/#partial-configuration-and-foreign-keys) for the same foreign-key pattern applied to Consumers/Consumer Groups).
+- **Different things change at different rates.** A Service's `host`/`protocol`/`port` is upstream infrastructure and changes rarely. Routes change every time an endpoint is added, renamed, or re-pathed. One file per concern means a PR that adds an endpoint touches `routes.yaml` only — the diff is the new route, not a 40-line reformat of a combined file.
+- **Smaller, single-purpose diffs are easier to review.** A reviewer looking at `routes.yaml` is reviewing "what's exposed and how it's matched." A reviewer looking at `service.yaml` is reviewing "where does this service point." Mixing both into one file forces every reviewer to context-switch between infrastructure and API-surface concerns on every change.
+- **It mirrors how the platform team's plugin files attach.** `platform/kong/plugins/key-auth.yaml` attaches to Routes by name, the same foreign-key mechanism used to attach `routes.yaml` to `service.yaml`. Keeping Services and Routes apart makes that pattern consistent top-to-bottom: every cross-cutting file (plugins, consumers) references the thing it applies to by name, rather than being nested inside it.
+- **It scales to multiple Services per repo without re-nesting on every merge.** With N services each contributing a `service.yaml` + `routes.yaml`, `deck file merge` just concatenates — there's no need to merge nested arrays-of-arrays or worry about one service's routes accidentally nesting under another's service entry.
+
+## Why one file per plugin, scoped to specific routes?
+
+Each file in `platform/kong/plugins/` corresponds to exactly one plugin, and every entry in it names the Route it applies to via the top-level `plugins[].route` foreign key — for example:
+
+```yaml
+# platform/kong/plugins/key-auth.yaml
+_format_version: "3.0"
+plugins:
+  - name: key-auth
+    route: KongAir_Bookings_API-getBookings
+    config:
+      key_names:
+        - apikey
+```
+
+This is deliberately *not* a blanket plugin applied to every service or route (the pattern you'd get from `deck file add-plugins --selector '$..services[*]'`). Instead:
+
+- **The file itself is the inventory.** To know every route that requires `key-auth`, open `key-auth.yaml` — you don't need to grep every `routes.yaml` in the repo for a nested `plugins:` block.
+- **Adding a new plugin never touches a service's files.** A platform engineer enabling rate limiting on a new route edits `rate-limiting.yaml` only; the application team's `routes.yaml` is untouched, and `git blame` on `routes.yaml` stays about routing, not security policy.
+- **Coverage is explicit and reviewable.** A PR adding an entry to `key-auth.yaml` is a visible, auditable decision ("this route now requires an API key") rather than an implicit side effect of a route inheriting from a service-wide or global plugin.
+- **Plugins can overlap or not apply at all, by design.** In this repo, `KongAir_Bookings_API-createBooking` has *both* `key-auth` and `rate-limiting-advanced` attached (two separate files, same route), while CORS preflight (`OPTIONS`) routes and the public flight-lookup routes have neither. A global plugin can't express that kind of per-route selectivity.
 
 ## The `deck` Conversion Flow
 
-Both services in this repo go through the same sequence of `deck` commands — this is the flow the pipeline automates, and the one worth understanding if you're new to `deck`:
-
 ```
-openapi.yaml
+services/<service>/openapi.yaml
     │
-    ▼  deck file openapi2kong --inso-compatible --spec <file>
-Kong service + routes (per service)
+    ▼  make generate
+    │  deck file openapi2kong --inso-compatible --spec <openapi.yaml>
+    │  → split into service.yaml (Service only) and routes.yaml (Routes only)
+services/<service>/service.yaml + routes.yaml   (committed, per service)
     │
-    ▼  deck file add-plugins -s <file> platform/kong/service-plugins/oidc.yaml
-Kong service + routes + OIDC plugin (per service)
+    ▼  make merge
+    │  deck file merge <every service.yaml/routes.yaml> \
+    │                  platform/kong/plugins/*.yaml \
+    │                  platform/kong/consumers/consumers.yaml
+build/deck.yaml   (one combined, gitignored file)
     │
-    ▼  deck file merge <all services> consumers.yaml global-plugins/*.yaml
-One combined Kong config
+    ▼  make validate
+    │  deck file validate build/deck.yaml
+Validated config
     │
-    ▼  deck file patch -s <file> platform/kong/patches/patches.yaml
-    ▼  deck file validate <file>
-Validated final config
-    │
-    ▼  deck gateway sync / deck gateway diff
-Kong Konnect
+    ▼  make diff   (review)        make sync   (apply)
+    │  deck gateway diff ...        deck gateway sync ...
+    ▼                                ▼
+                 Kong Konnect
 ```
 
-Try it yourself without the pipeline — see [Local Validation](#local-validation) below.
+Try it yourself — see [Local Validation](#local-validation) below.
+
+## Makefile Targets
+
+| Target          | What it does |
+| ---------------- | -------------------------------------------------------------------------- |
+| `make generate`  | Regenerate `service.yaml` + `routes.yaml` for every service from its `openapi.yaml`. Run after any spec change. |
+| `make merge`     | Combine every service/route/plugin/consumer file into `build/deck.yaml`. |
+| `make validate`  | `make merge`, then validate the result offline (no Kong connection needed). |
+| `make diff`      | `make validate`, then show what would change on the control plane. Requires `DECK_KONNECT_TOKEN` and `DECK_KONNECT_CONTROL_PLANE_NAME`. |
+| `make sync`      | `make validate`, then apply the merged config to the control plane. Same env vars as `diff`. |
+| `make clean`     | Remove `build/`. |
+| `make all`       | `generate` + `validate` — the full local loop without talking to Kong. |
 
 ## Services in This Repo
 
@@ -76,85 +130,36 @@ Try it yourself without the pipeline — see [Local Validation](#local-validatio
 | `services/kongair-bookings/` | `https://httpbin.konghq.com` | Create/list/cancel bookings |
 | `services/kongair-flights/` | `https://httpbin.konghq.com` | List/get scheduled flights |
 
-Both specs hardcode `https://httpbin.konghq.com` as `servers[0].url`, so `deck file openapi2kong` derives the Kong service `host`/`protocol`/`port` from the spec directly — no environment-specific substitution needed for this demo. In a real repo you'd typically point this at your own per-environment upstream (see [`docs/PIPELINE_GUIDE.md`](docs/PIPELINE_GUIDE.md#environment-specific-values-in-specs) for the `${<PREFIX>_UPSTREAM_URL}` placeholder pattern this template supports).
+Both specs hardcode `https://httpbin.konghq.com` as `servers[0].url`, so `deck file openapi2kong` derives the Kong service `host`/`protocol`/`port` from the spec directly — no environment-specific substitution needed for this demo.
 
-## Pipeline Overview
+## Plugin Coverage
 
-For each service, the pipeline:
+| Route | `key-auth` | `rate-limiting-advanced` |
+|---|---|---|
+| `GET /bookings` | ✅ | — |
+| `POST /bookings` | ✅ | ✅ (10/min) |
+| `GET /bookings/{ticketNumber}` | ✅ | — |
+| `DELETE /bookings/{ticketNumber}` | ✅ | ✅ (10/min) |
+| `OPTIONS /bookings*` (CORS preflight) | — | — |
+| `GET /flights` | — | ✅ (100/min) |
+| `GET /flights/{flightNumber}` | — | — |
+| `GET /flights/{flightNumber}/details` | — | — |
+| `OPTIONS /flights*` (CORS preflight) | — | — |
 
-1. `deck file openapi2kong` — convert `openapi.yaml` → Kong service/routes
-2. `deck file add-plugins` — inject `platform/kong/service-plugins/oidc.yaml`
-
-Then, once per run:
-
-3. `deck file merge` — combine every service's config with global plugins, consumers, and patches
-4. `deck file patch` — apply `platform/kong/patches/patches.yaml`
-5. `deck file validate` — validate the merged config
-6. `deck gateway sync` (or `deck gateway diff` on pull requests) — apply to Kong Konnect
-
-## Branch → Environment Mapping
-
-| Branch         | Environment    | Trigger              |
-| -------------- | -------------- | --------------------- |
-| `releases/dev` | dev            | Automatic            |
-| `releases/qa`  | qa             | Automatic            |
-| `releases/uat` | uat            | Manual (approval)    |
-| `releases/prd` | prod           | Manual (approval)    |
-| `main`         | dev (fallback) | Automatic            |
-| Pull requests  | —              | Validate + diff only |
-
-## Required Bitbucket Variables
-
-Set these in **Repository Settings → Pipelines → Deployments** per environment:
-
-| Variable                           | Description                                                |
-| ----------------------------------- | ------------------------------------------------------------ |
-| `AWS_ROLE_ARN`                     | IAM role the pipeline assumes via OIDC                     |
-| `KONNECT_CONTROL_PLANE_SECRET_ARN` | AWS Secrets Manager ARN for Kong Konnect credentials       |
-| `AWS_REGION`                       | AWS region (e.g. `ap-southeast-2`)                         |
-| `OIDC_ISSUER`                      | OIDC issuer URL used by the `openid-connect` plugin        |
-| `OIDC_AUDIENCE`                    | OIDC audience value                                        |
-| `ENVIRONMENT_NAME`                 | Environment label used in log/telemetry fields             |
-| `PRODUCT_NAME`                     | Product label used in telemetry/log fields (e.g. `kongair`) |
-| `NEW_RELIC_API_KEY`                | New Relic API key for OpenTelemetry (optional)             |
-| `KONNECT_ADDR`                     | Konnect API address (default: `https://au.api.konghq.com`) |
-
-No per-service variables are required for the two example services, since both hardcode their upstream. See [`docs/PIPELINE_GUIDE.md`](docs/PIPELINE_GUIDE.md) for the optional `${<PREFIX>_UPSTREAM_URL}` pattern if you add a service whose upstream differs per environment.
-
-## AWS Secrets Manager Format
-
-The secret referenced by `KONNECT_CONTROL_PLANE_SECRET_ARN` must contain:
-
-```json
-{
-  "konnect_token": "kpat_YOUR_TOKEN",
-  "control_plane_name": "your-control-plane-name"
-}
-```
+Booking routes carry customer data, so every non-preflight booking route requires `key-auth`. Flight schedules are public read-only data, so none of them require auth — but the top-level listing endpoint (`GET /flights`) is rate limited since it's the highest-traffic, unauthenticated route. The two state-changing booking routes (`createBooking`, `cancelBooking`) are rate limited to protect the upstream from abusive write traffic. This spread is intentional: it shows plugins stacking on one route, applying to only one service, and not applying at all — all from three small files.
 
 ## Adding a New Service
 
-1. Create `services/my-service/openapi.yaml` with `servers[0].url` set to your upstream (a literal URL, or a `${MY_SERVICE_UPSTREAM_URL}` placeholder if it differs per environment — see [`docs/PIPELINE_GUIDE.md`](docs/PIPELINE_GUIDE.md#environment-specific-values-in-specs)).
-2. Open a pull request — the pipeline validates the spec and shows a diff.
-3. Merge to `releases/<env>` to deploy.
+1. Create `services/my-service/openapi.yaml` with `servers[0].url` set to your upstream.
+2. Run `make generate` — commit the resulting `services/my-service/service.yaml` and `routes.yaml`.
+3. If any of its routes need `key-auth` or rate limiting, add entries (by route name) to the relevant file in `platform/kong/plugins/`. If not, add nothing — there is no default/global plugin to opt out of.
+4. `make validate` locally, then open a PR. `make diff` in CI shows the control-plane impact before merge.
 
-No platform changes are needed — OIDC, CORS, logging, telemetry and rate limiting apply automatically to every service.
+## Adding a New Plugin
 
-## Request Payload Limit
-
-Inbound request bodies are capped at **5 MiB (5,242,880 bytes)** across every service and route, enforced by `platform/kong/global-plugins/request-size-limiting.yaml`.
-
-Three points for integrators:
-
-- **The rejection status is `413` or `417`.** Kong returns `417 Expectation Failed` instead of `413 Payload Too Large` when the request carries an `Expect: 100-continue` header, which many HTTP clients add automatically for larger uploads. Both carry the body `{"message":"Request size limit exceeded"}` — handle both.
-- **The error body is Kong's own** and does not match the error envelope the services return. Treat it as a gateway-level rejection rather than an application error.
-- **Authentication is evaluated first**, so an oversized request with an invalid token returns `401`, not `413`.
-
-Requests without a `Content-Length` header, including chunked transfers, are still measured — Kong sizes the buffered body, or stats the temporary file when nginx has spilled it to disk.
-
-The limit governs inbound requests only — response sizes are unaffected. For a service that legitimately needs more headroom, bind a route-level override of this plugin at that route rather than raising the global ceiling.
-
-Kong's own `client_max_body_size` on the data planes sits above this limit so the plugin governs the boundary and returns consistent JSON; if it were set at or below 5 MiB, nginx would reject first with an HTML error page instead.
+1. Create `platform/kong/plugins/<plugin-name>.yaml` with `plugins:` at the top level.
+2. Add one entry per Route that needs it, using `route: <route-name>` (the same name decK generated in that service's `routes.yaml`).
+3. `make validate` — decK will report a broken foreign key if a route name is misspelled or doesn't exist yet.
 
 ## Local Validation
 
@@ -163,37 +168,31 @@ Kong's own `client_max_body_size` on the data planes sits above this limit so th
 curl -sL https://github.com/kong/deck/releases/download/v1.55.0/deck_1.55.0_linux_amd64.tar.gz | tar -xz
 sudo mv deck /usr/local/bin/
 
-# Convert a service OAS
-deck file openapi2kong --inso-compatible --spec services/kongair-bookings/openapi.yaml -o /tmp/kongair-bookings.yaml
+# Full local loop: regenerate every service's files, then validate the merge
+make all
 
-# Validate
-deck file validate /tmp/kongair-bookings.yaml
+# Review the merged, validated file
+cat build/deck.yaml
 
-# Inject the OIDC plugin (substitute the placeholders first)
-sed -e "s|\${OIDC_ISSUER}|https://your-issuer.example.com/|g" \
-    -e "s|\${OIDC_AUDIENCE}|your-audience|g" \
-    platform/kong/service-plugins/oidc.yaml > /tmp/oidc.yaml
-deck file add-plugins -s /tmp/kongair-bookings.yaml /tmp/oidc.yaml -o /tmp/kongair-bookings.yaml
-
-# Diff against a live control plane
-deck gateway diff /tmp/kongair-bookings.yaml \
-  --konnect-addr https://au.api.konghq.com \
-  --konnect-control-plane-name your-cp \
-  --konnect-token $KONNECT_TOKEN
+# Diff against a live control plane (requires Konnect credentials)
+DECK_KONNECT_TOKEN=$KONNECT_TOKEN \
+DECK_KONNECT_CONTROL_PLANE_NAME=your-cp \
+  make diff
 ```
 
 ## Documentation
 
-- [`docs/QUICKSTART.md`](docs/QUICKSTART.md) — set up the pipeline and deploy your first service
-- [`docs/PIPELINE_GUIDE.md`](docs/PIPELINE_GUIDE.md) — full Bitbucket pipeline reference
-- [`docs/WORKFLOW.md`](docs/WORKFLOW.md) — diagrams of the ownership model, pipeline flow, and branch strategy
+- [`docs/QUICKSTART.md`](docs/QUICKSTART.md) — set up and run the pipeline locally
+- [`docs/PIPELINE_GUIDE.md`](docs/PIPELINE_GUIDE.md) — full `Makefile`/`deck` reference
+- [`docs/WORKFLOW.md`](docs/WORKFLOW.md) — diagrams of the ownership model and file-merge flow
 - [`docs/APPLICATION_TEAM_ONBOARDING.md`](docs/APPLICATION_TEAM_ONBOARDING.md) — onboarding guide for app teams who just need to ship an `openapi.yaml`
 
 ## Additional Resources
 
-- [deck Documentation](https://docs.konghq.com/deck/)
+- [deck Documentation](https://developer.konghq.com/deck/)
+- [deck: Select tags and lookup tags](https://developer.konghq.com/deck/gateway/tags/) — the foreign-key/partial-config pattern this repo relies on
+- [deck: Managing plugins with decK](https://developer.konghq.com/deck/file/manipulation/plugins/)
 - [Kong Konnect](https://docs.konghq.com/konnect/)
 - [OpenAPI Specification](https://swagger.io/specification/)
-- [Bitbucket Pipelines](https://support.atlassian.com/bitbucket-cloud/docs/get-started-with-bitbucket-pipelines/)
 - [KongAir](https://github.com/Kong/KongAir) — the demo airline these example services are drawn from
 - [httpbin.konghq.com](https://httpbin.konghq.com) — the real public upstream both example services point at

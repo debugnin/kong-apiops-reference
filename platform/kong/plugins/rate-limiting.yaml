@@ -1,0 +1,41 @@
+# rate-limiting-advanced — one file for the whole plugin type, platform-team owned.
+#
+# Same pattern as key-auth.yaml: entries attach to Routes by name, so this
+# file is the single place to look to know which routes are rate limited —
+# no need to open every service/route file and check for a nested plugin.
+#
+# Applied selectively, not globally:
+#   - the two state-changing booking routes (create/cancel), to protect the
+#     upstream from abusive write traffic
+#   - kongair-flights' public listing route, which has no auth in front of
+#     it and is the highest-traffic read endpoint
+# Everything else (lookups by id, CORS preflights) is left unlimited.
+_format_version: "3.0"
+plugins:
+  - name: rate-limiting-advanced
+    route: KongAir_Bookings_API-createBooking
+    config:
+      limit:
+        - 10
+      window_size:
+        - 60
+      sync_rate: -1
+      strategy: local
+  - name: rate-limiting-advanced
+    route: KongAir_Bookings_API-cancelBooking
+    config:
+      limit:
+        - 10
+      window_size:
+        - 60
+      sync_rate: -1
+      strategy: local
+  - name: rate-limiting-advanced
+    route: KongAir_Flights_API-getFlights
+    config:
+      limit:
+        - 100
+      window_size:
+        - 60
+      sync_rate: -1
+      strategy: local

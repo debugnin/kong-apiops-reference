@@ -1,0 +1,32 @@
+# key-auth — one file for the whole plugin type, platform-team owned.
+#
+# Only an entry here means the plugin is enforced. Each entry attaches to a
+# single Route *by name* using decK's top-level `plugins[].route` foreign
+# key — the route itself (routes.yaml) is never touched to add this. Routes
+# not listed below are not key-auth protected.
+#
+# Applied to every kongair-bookings route that reads or writes a specific
+# customer's booking (not the CORS preflight routes, and not kongair-flights,
+# which is public schedule data).
+_format_version: "3.0"
+plugins:
+  - name: key-auth
+    route: KongAir_Bookings_API-getBookings
+    config:
+      key_names:
+        - apikey
+  - name: key-auth
+    route: KongAir_Bookings_API-getBookingByTicketNumber
+    config:
+      key_names:
+        - apikey
+  - name: key-auth
+    route: KongAir_Bookings_API-createBooking
+    config:
+      key_names:
+        - apikey
+  - name: key-auth
+    route: KongAir_Bookings_API-cancelBooking
+    config:
+      key_names:
+        - apikey

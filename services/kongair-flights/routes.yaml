@@ -1,0 +1,56 @@
+_format_version: "3.0"
+routes:
+  - methods:
+      - GET
+    name: KongAir_Flights_API-getFlights
+    paths:
+      - ~/flights$
+    regex_priority: 200
+    strip_path: false
+    service:
+      name: KongAir_Flights_API
+  - methods:
+      - OPTIONS
+    name: KongAir_Flights_API-corsFlights
+    paths:
+      - ~/flights$
+    regex_priority: 200
+    strip_path: false
+    service:
+      name: KongAir_Flights_API
+  - methods:
+      - GET
+    name: KongAir_Flights_API-getFlightByNumber
+    paths:
+      - ~/flights/(?<flightNumber>[^#?/]+)$
+    regex_priority: 100
+    strip_path: false
+    service:
+      name: KongAir_Flights_API
+  - methods:
+      - OPTIONS
+    name: KongAir_Flights_API-corsFlightByNumber
+    paths:
+      - ~/flights/(?<flightNumber>[^#?/]+)$
+    regex_priority: 100
+    strip_path: false
+    service:
+      name: KongAir_Flights_API
+  - methods:
+      - GET
+    name: KongAir_Flights_API-getFlightDetails
+    paths:
+      - ~/flights/(?<flightNumber>[^#?/]+)/details$
+    regex_priority: 100
+    strip_path: false
+    service:
+      name: KongAir_Flights_API
+  - methods:
+      - OPTIONS
+    name: KongAir_Flights_API-corsFlightDetails
+    paths:
+      - ~/flights/(?<flightNumber>[^#?/]+)/details$
+    regex_priority: 100
+    strip_path: false
+    service:
+      name: KongAir_Flights_API

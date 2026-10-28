@@ -1,8 +1,17 @@
+# Consumers and their key-auth credentials. Owned by the platform team,
+# same as the plugin files — application teams never need to touch this to
+# ship a new route.
 _format_version: "3.0"
 consumers:
   - username: kongair-web
     custom_id: kongair-web
+    keyauth_credentials:
+      - key: demo-key-kongair-web
   - username: kongair-mobile
     custom_id: kongair-mobile
+    keyauth_credentials:
+      - key: demo-key-kongair-mobile
   - username: kongair-partner-dev
     custom_id: kongair-partner-dev
+    keyauth_credentials:
+      - key: demo-key-kongair-partner-dev

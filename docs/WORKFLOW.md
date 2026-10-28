@@ -3,84 +3,110 @@
 ## Repository Ownership Model
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Bitbucket Repository                         │
-│                                                                 │
-│  ┌─────────────────────────┐  ┌─────────────────────────────┐  │
-│  │  Application Team       │  │  Platform Team              │  │
-│  │                         │  │                             │  │
-│  │  services/<svc>/        │  │  platform/kong/             │  │
-│  │  └─ openapi.yaml        │  │  ├─ service-plugins/        │  │
-│  │                         │  │  │   └─ oidc.yaml           │  │
-│  │  (declares WHAT)        │  │  ├─ global-plugins/         │  │
-│  │                         │  │  ├─ consumers/              │  │
-│  │                         │  │  └─ patches/                │  │
-│  │                         │  │                             │  │
-│  │                         │  │  bitbucket-pipelines.yml    │  │
-│  │                         │  │  (decides HOW)              │  │
-│  └─────────────────────────┘  └─────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                           Repository                                 │
+│                                                                       │
+│  ┌───────────────────────────┐   ┌──────────────────────────────┐    │
+│  │  Application Team         │   │  Platform Team               │    │
+│  │                           │   │                              │    │
+│  │  services/<svc>/          │   │  platform/kong/              │    │
+│  │  ├─ openapi.yaml ◄── source│   │  ├─ plugins/                │    │
+│  │  ├─ service.yaml ◄─ generated│ │  │   ├─ key-auth.yaml       │    │
+│  │  └─ routes.yaml  ◄─ generated│ │  │   └─ rate-limiting.yaml  │    │
+│  │                           │   │  └─ consumers/               │    │
+│  │  (declares WHAT routes    │   │      └─ consumers.yaml       │    │
+│  │   exist, by name)         │   │                              │    │
+│  │                           │   │  (decides WHICH of those     │    │
+│  │                           │   │   routes get key-auth /      │    │
+│  │                           │   │   rate limiting, by name)    │    │
+│  │                           │   │                              │    │
+│  │                           │   │  Makefile                    │    │
+│  └───────────────────────────┘   └──────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-In this repo, `kongair-bookings` and `kongair-flights` play the role of two application teams on the left. Everything on the right applies identically to both.
+Neither side nests inside the other. A plugin file names the routes it applies to; a routes file names the service it belongs to. `deck file merge` is what stitches the two sides back together — see below.
 
-## Pipeline Processing Flow (per service)
+## The Split: One Service Becomes Two Files
+
+```
+services/kongair-bookings/openapi.yaml
+            │
+            ▼  deck file openapi2kong --inso-compatible --spec openapi.yaml
+┌─────────────────────────────────────────────┐
+│ services:                                    │
+│   - name: KongAir_Bookings_API                │
+│     host: httpbin.konghq.com                 │
+│     routes:            ◄── nested, one file  │
+│       - name: ...-getBookings                │
+│       - name: ...-createBooking               │
+│       - name: ...-cancelBooking               │
+│       - ...                                   │
+└─────────────────────────────────────────────┘
+            │
+            ▼  split with yq (make generate)
+┌───────────────────────────┐   ┌────────────────────────────────────┐
+│ services/kongair-bookings/ │   │ services/kongair-bookings/          │
+│   service.yaml             │   │   routes.yaml                       │
+│                             │   │                                      │
+│ services:                  │   │ routes:                              │
+│   - name: KongAir_Bookings_API│ │   - name: ...-getBookings            │
+│     host: httpbin.konghq.com  │ │     service: {name: KongAir_Bookings_API} │
+│     (no routes key)        │   │   - name: ...-createBooking         │
+│                             │   │     service: {name: KongAir_Bookings_API} │
+└───────────────────────────┘   └────────────────────────────────────┘
+```
+
+The Route → Service link survives the split as a foreign key (`service: {name: ...}`), which `deck file merge` resolves when it recombines files. This is the same foreign-key mechanism decK uses elsewhere for partial configuration — see [deck's tags documentation](https://developer.konghq.com/deck/gateway/tags/#partial-configuration-and-foreign-keys).
+
+## How a Plugin File Attaches, Without Nesting
+
+```
+platform/kong/plugins/key-auth.yaml
+┌─────────────────────────────────────────┐
+│ plugins:                                  │
+│   - name: key-auth                        │
+│     route: KongAir_Bookings_API-getBookings│ ◄── foreign key, by name
+│     config: {key_names: [apikey]}          │
+│   - name: key-auth                         │
+│     route: KongAir_Bookings_API-createBooking│
+│     config: {key_names: [apikey]}          │
+└─────────────────────────────────────────┘
+```
+
+Four routes in `kongair-bookings/routes.yaml` get an entry here; two CORS-preflight routes and the entire `kongair-flights` service get none. Nothing in `routes.yaml` or `service.yaml` changes to make that true — coverage is entirely a property of which routes are *named* in this one file.
+
+## Merge + Validate + Sync Flow
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ For each services/<svc>/ directory                               │
-├──────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  1. deck file openapi2kong                                       │
-│     openapi.yaml ──► /tmp/kong-configs/<svc>.yaml               │
-│                                                                  │
-│  2. deck file add-plugins                                       │
-│     platform/kong/service-plugins/oidc.yaml                     │
-│     └─► OIDC auth applied to every route                       │
-│                                                                  │
+│ make merge                                                         │
+│                                                                    │
+│  deck file merge                                                   │
+│    services/kongair-bookings/{service,routes}.yaml                │
+│    services/kongair-flights/{service,routes}.yaml                 │
+│    platform/kong/plugins/{key-auth,rate-limiting}.yaml            │
+│    platform/kong/consumers/consumers.yaml                         │
+│    -o build/deck.yaml                                             │
 └──────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ Merge + Finalize                                                 │
-│                                                                  │
-│  deck file merge  ──► all service configs                       │
-│       + platform/kong/global-plugins/*.yaml                     │
-│       + platform/kong/consumers/consumers.yaml                  │
-│                                                                  │
-│  deck file patch    ──► platform/kong/patches/patches.yaml      │
-│  deck file validate ──► /tmp/final-kong.yaml                    │
-│  deck gateway sync  ──► Kong Konnect                            │
-│                                                                  │
+│ make validate                                                       │
+│                                                                    │
+│  deck file validate build/deck.yaml                                │
+│  • schema check                                                   │
+│  • every route:/service: foreign key resolves                    │
 └──────────────────────────────────────────────────────────────────┘
+                              │
+                     ┌────────┴────────┐
+                     ▼                 ▼
+            make diff                make sync
+      deck gateway diff        deck gateway sync
+      (read-only preview)      (applies to Konnect)
 ```
 
-Concretely, with the two services shipped in this repo:
-
-```
-services/kongair-bookings/openapi.yaml  ──► steps 1, 2
-services/kongair-flights/openapi.yaml   ──► steps 1, 2
-```
-
-Both resolve to `https://httpbin.konghq.com`, so step 1 converts a real, reachable upstream for each service without any extra setup.
-
-## Branch-Based Environment Flow
-
-```
-┌────────────────────────────────────────────────────────────────┐
-│                                                                │
-│  feature/* ────► Pull Request ────► (validate + diff only)    │
-│                                                                │
-│  releases/dev  ──► auto-deploy ──► dev  control plane         │
-│  releases/qa   ──► auto-deploy ──► qa   control plane         │
-│  releases/uat  ──► manual approval ──► uat  control plane     │
-│  releases/prd  ──► manual approval ──► prod control plane     │
-│  main          ──► auto-deploy ──► dev  (fallback)            │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
-```
-
-Environment labels (`ENVIRONMENT_NAME`, `PRODUCT_NAME`) and OIDC settings are stored as Bitbucket deployment variables — there are no environment-specific files in the repository. The pipeline extracts the environment name directly from the branch name.
+Concretely, with the two services shipped in this repo, `build/deck.yaml` ends up with 2 Services, 12 Routes, 3 Consumers, and 7 `plugins:` entries (4 `key-auth`, 3 `rate-limiting-advanced`) — fewer plugin entries than routes, because most routes have none.
 
 ## Pull Request Validation Flow
 
@@ -91,92 +117,61 @@ Environment labels (`ENVIRONMENT_NAME`, `PRODUCT_NAME`) and OIDC settings are st
                               │
                               ▼
         ┌─────────────────────────────────────┐
-        │   Validate Configuration            │
-        │   • openapi2kong for each service   │
-        │   • add-plugins (oidc)              │
-        │   • merge global configs            │
-        │   • deck file validate              │
+        │   make validate                      │
+        │   • generate already committed       │
+        │   • merge + offline schema/FK check   │
         └─────────────────────────────────────┘
                               │
                               ▼
         ┌─────────────────────────────────────┐
-        │   Preview Changes (diff)            │
-        │   • deck gateway diff vs dev        │
-        │   • shows + additions               │
-        │   • shows ~ modifications           │
-        │   • shows - deletions               │
+        │   make diff                          │
+        │   • deck gateway diff                │
+        │   • shows + additions                │
+        │   • shows ~ modifications             │
+        │   • shows - deletions                 │
         └─────────────────────────────────────┘
                               │
                               ▼
                     ┌─────────────────┐
                     │  Approve & Merge │
                     └─────────────────┘
-```
-
-## Authentication Flow
-
-```
-┌────────────────────────────────────────────────────────────────┐
-│  Bitbucket Pipeline                                            │
-│  1. Step starts with OIDC token (BITBUCKET_STEP_OIDC_TOKEN)   │
-└────────────────────────────────────────────────────────────────┘
                               │
                               ▼
-┌────────────────────────────────────────────────────────────────┐
-│  AWS STS                                                       │
-│  2. Exchanges OIDC token for temporary credentials             │
-│  3. Assumes AWS_ROLE_ARN                                       │
-└────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌────────────────────────────────────────────────────────────────┐
-│  AWS Secrets Manager                                           │
-│  4. Retrieves KONNECT_CONTROL_PLANE_SECRET_ARN                 │
-│  5. Returns { konnect_token, control_plane_name }              │
-└────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌────────────────────────────────────────────────────────────────┐
-│  Kong Konnect API                                              │
-│  6. deck gateway sync --konnect-token $KONNECT_TOKEN           │
-└────────────────────────────────────────────────────────────────┘
+                    ┌─────────────────┐
+                    │  make sync        │
+                    └─────────────────┘
 ```
 
 ## Error Handling
 
 ```
-Pipeline Step Failure
+make target failure
         │
-        ├──► openapi2kong failed
-        │    └─► Check OpenAPI spec is valid 3.0; run deck file validate locally
+        ├──► make generate failed
+        │    └─► Check the OpenAPI spec is valid 3.0; openapi2kong reports the exact field
         │
-        ├──► add-plugins failed
-        │    └─► Check platform plugin YAML syntax
+        ├──► make merge / make validate failed
+        │    └─► decK reports the exact broken foreign key — a route: or service: name
+        │        in a plugin/routes file with no matching entity in the merged set
         │
-        ├──► merge / validate failed
-        │    └─► Review deck output; check for duplicate resource names
-        │
-        ├──► AWS auth failed
-        │    └─► Check OIDC trust policy; verify AWS_ROLE_ARN is correct
-        │
-        ├──► Secrets Manager failed
-        │    └─► Verify KONNECT_CONTROL_PLANE_SECRET_ARN and IAM permissions
-        │
-        └──► Konnect sync failed
-             └─► Check control_plane_name matches exactly in Konnect
-                 Verify konnect_token is valid and not expired
+        └──► make diff / make sync failed (auth)
+             └─► Confirm DECK_KONNECT_TOKEN is valid and DECK_KONNECT_CONTROL_PLANE_NAME
+                 matches the control plane name exactly
 ```
+
+There is no cloud-provider credential exchange step in this repo — authentication to Kong Konnect itself is just a personal access token passed as `DECK_KONNECT_TOKEN`. (Kong's `key-auth` plugin, demonstrated on the booking routes, is a separate thing: it's how *API callers* authenticate to the gateway, not how this pipeline authenticates to Konnect.)
 
 ## Key Components
 
 ### Application team files (per service)
 
-- `services/<svc>/openapi.yaml` — API spec; defines routes and upstream URL
+- `services/<svc>/openapi.yaml` — API spec; source of truth for routes and upstream URL
+- `services/<svc>/service.yaml` — generated, the Gateway Service only
+- `services/<svc>/routes.yaml` — generated, the Routes only, each referencing its Service by name
 
 ### Platform team files
 
-- `platform/kong/service-plugins/oidc.yaml` — OIDC auth injected into every service
-- `platform/kong/global-plugins/*.yaml` — Gateway-wide plugins (correlation-id, telemetry, etc.)
-- `platform/kong/consumers/consumers.yaml` — Kong consumers
-- `platform/kong/patches/patches.yaml` — Post-merge patches
-- `bitbucket-pipelines.yml` — Full pipeline definition
+- `platform/kong/plugins/key-auth.yaml` — every route requiring `key-auth`, named explicitly
+- `platform/kong/plugins/rate-limiting.yaml` — every route requiring rate limiting, named explicitly
+- `platform/kong/consumers/consumers.yaml` — Kong consumers and their key-auth credentials
+- `Makefile` — `generate` / `merge` / `validate` / `diff` / `sync` targets
