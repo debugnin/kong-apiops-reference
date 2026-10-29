@@ -14,16 +14,20 @@
 │  │  └─ kong/                  │   │  │   └─ correlation-id.yaml    │    │
 │  │      ├─ service.yaml       │   │  │       (global — no one      │    │
 │  │      │   ◄─ generated      │   │  │        service owns it)     │    │
-│  │      │   (Service + its    │   │  └─ consumers/                 │    │
-│  │      │    Routes, nested)  │   │      └─ consumers.yaml          │    │
-│  │      └─ plugins.yaml       │   │                                │    │
-│  │          ◄─ platform-owned,│   │  (decides WHICH routes get     │    │
-│  │             lives here but │   │   key-auth / rate limiting,    │    │
-│  │             never edited   │   │   by name, in each service's   │    │
-│  │             by the app team│   │   own plugins.yaml — and which │    │
+│  │      │   (Service + its    │   │  ├─ partials/                  │    │
+│  │      │    Routes, nested)  │   │  │   └─ redis.yaml              │    │
+│  │      └─ plugins.yaml       │   │  │       (shared config, linked│    │
+│  │          ◄─ platform-owned,│   │  │        from plugins by id:) │    │
+│  │             lives here but │   │  └─ consumers/                 │    │
+│  │             never edited   │   │      └─ consumers.yaml          │    │
+│  │             by the app team│   │                                │    │
+│  │                            │   │  (decides WHICH routes get     │    │
+│  │  (declares WHAT routes     │   │   key-auth / rate limiting,    │    │
+│  │   exist, by name)          │   │   by name, in each service's   │    │
+│  │                            │   │   own plugins.yaml — and which │    │
 │  │                            │   │   plugins apply everywhere,    │    │
-│  │  (declares WHAT routes     │   │   with no single owner)        │    │
-│  │   exist, by name)          │   │                                │    │
+│  │                            │   │   with no single owner)        │    │
+│  │                            │   │                                │    │
 │  │                            │   │  Makefile                      │    │
 │  └───────────────────────────┘   └──────────────────────────────┘    │
 └──────────────────────────────────────────────────────────────────────┘
@@ -100,6 +104,36 @@ platform/kong/plugins/correlation-id.yaml
 
 No `route:` or `service:` key means decK applies this plugin to every request through every Service and Route in the merged config, with nothing to name. Because it isn't scoped to bookings or to flights in particular, it doesn't live in either service's `kong/` folder — a global plugin has no single service to sit next to, so it lives under `platform/kong/plugins/` instead, outside every service's directory. This is the correct shape when a plugin is genuinely universal (request tracing, CORS, logging) — forcing it through the selective, name-every-route pattern above would add a line per route for zero actual selectivity, and putting it in one service's folder would misrepresent it as belonging to that service alone.
 
+## Partials — Shared Config, Linked by `id:` Instead of Repeated
+
+The three patterns above all answer "which Routes does this plugin apply to." A Partial answers a different question entirely: "where does this plugin's shared *configuration* live, so three plugin entries don't each hardcode the same Redis host."
+
+```
+platform/kong/partials/redis.yaml
+┌─────────────────────────────────────────────┐
+│ partials:                                     │
+│   - id: 9e8b1f1a-2b3c-4d5e-8f6a-1a2b3c4d5e6f  │ ◄── hardcoded, stable id
+│     name: platform-redis                       │
+│     type: redis-ee                             │
+│     config: {host: redis.platform.internal}    │
+└─────────────────────────────────────────────┘
+                    │
+                    │ linked by id:, not name: (decK does not do a name
+                    │ lookup for plugins[].partials[].id — it's a literal id)
+                    ▼
+services/bookings/kong/plugins.yaml   services/flights/kong/plugins.yaml
+┌───────────────────────────────┐    ┌───────────────────────────────┐
+│ - name: rate-limiting-advanced │    │ - name: rate-limiting-advanced │
+│   route: ...-createBooking     │    │   route: Flights_API-getFlights│
+│   partials:                    │    │   partials:                    │
+│     - id: 9e8b1f1a-...-5e6f    │    │     - id: 9e8b1f1a-...-5e6f    │
+│       path: config.redis        │    │       path: config.redis        │
+│   config: {strategy: redis}     │    │   config: {strategy: redis}     │
+└───────────────────────────────┘    └───────────────────────────────┘
+```
+
+`path: config.redis` tells decK which part of the plugin's own config schema the Partial's `config` block fills in. Because the id is hardcoded rather than left for Kong to generate, it can be copied verbatim into every plugin entry across every service that needs this Redis connection — three plugin entries here, potentially many more in a larger repo — without any of them repeating `host`/`port`. Update `platform/kong/partials/redis.yaml` once, and every linked plugin picks up the change on the next sync. This lives under `platform/kong/`, not inside either service's `kong/` folder, for the same reason `correlation-id.yaml` does: it isn't owned by bookings or flights specifically, it's infrastructure the platform team runs once.
+
 ## Merge + Validate + Sync Flow
 
 ```
@@ -112,6 +146,7 @@ No `route:` or `service:` key means decK applies this plugin to every request th
 │    services/bookings/kong/plugins.yaml                              │
 │    services/flights/kong/plugins.yaml                               │
 │    platform/kong/plugins/correlation-id.yaml                       │
+│    platform/kong/partials/redis.yaml                               │
 │    platform/kong/consumers/consumers.yaml                         │
 │    -o build/deck.yaml                                             │
 └──────────────────────────────────────────────────────────────────┘
@@ -124,6 +159,7 @@ No `route:` or `service:` key means decK applies this plugin to every request th
 │  • schema check                                                   │
 │  • every route: foreign key resolves to a nested Route            │
 │  • every service: foreign key resolves to a top-level Service     │
+│  • every plugins[].partials[].id resolves to a Partial's id       │
 │    (global plugins have no foreign key to check at all)           │
 └──────────────────────────────────────────────────────────────────┘
                               │
@@ -134,7 +170,7 @@ No `route:` or `service:` key means decK applies this plugin to every request th
       (read-only preview)      (applies to Konnect)
 ```
 
-Concretely, with the two services shipped in this repo, `build/deck.yaml` ends up with 2 Services (each with its Routes nested inside, 12 Routes total), 3 Consumers, and 9 top-level `plugins:` entries: 4 `key-auth` + 2 `rate-limiting-advanced` from `services/bookings/kong/plugins.yaml` (route-level, each naming one bookings route), 1 `rate-limiting-advanced` from `services/flights/kong/plugins.yaml` (route-level, naming `Flights_API-getFlights`), 1 `request-size-limiting` from `services/bookings/kong/plugins.yaml` (service-level, naming `Bookings_API` and covering its 6 Routes with that single entry), and 1 `correlation-id` from `platform/kong/plugins/` with no route/service scoping at all, applying to every one of the 12 routes.
+Concretely, with the two services shipped in this repo, `build/deck.yaml` ends up with 2 Services (each with its Routes nested inside, 12 Routes total), 3 Consumers, 1 Partial (`platform-redis`), and 9 top-level `plugins:` entries: 4 `key-auth` + 2 `rate-limiting-advanced` from `services/bookings/kong/plugins.yaml` (route-level, each naming one bookings route), 1 `rate-limiting-advanced` from `services/flights/kong/plugins.yaml` (route-level, naming `Flights_API-getFlights`), 1 `request-size-limiting` from `services/bookings/kong/plugins.yaml` (service-level, naming `Bookings_API` and covering its 6 Routes with that single entry), and 1 `correlation-id` from `platform/kong/plugins/` with no route/service scoping at all, applying to every one of the 12 routes. All 3 `rate-limiting-advanced` entries additionally link to the one Partial by `id:`.
 
 ## Pull Request Validation Flow
 
@@ -181,7 +217,8 @@ make target failure
         ├──► make merge / make validate failed
         │    └─► decK reports the exact broken foreign key — a route: or service: name
         │        in a plugins.yaml with no matching Route/Service nested in any
-        │        service's kong/service.yaml
+        │        service's kong/service.yaml, or a plugins[].partials[].id with no
+        │        matching Partial id in platform/kong/partials/
         │
         └──► make diff / make sync failed (auth)
              └─► Confirm DECK_KONNECT_TOKEN is valid and DECK_KONNECT_CONTROL_PLANE_NAME
@@ -200,8 +237,9 @@ There is no cloud-provider credential exchange step in this repo — authenticat
 
 ### Platform team files
 
-- `services/bookings/kong/plugins.yaml` — 4 `key-auth` + 2 `rate-limiting-advanced` (route-level), 1 `request-size-limiting` (service-level, `service: Bookings_API`)
-- `services/flights/kong/plugins.yaml` — 1 `rate-limiting-advanced` (route-level, `route: Flights_API-getFlights`)
+- `services/bookings/kong/plugins.yaml` — 4 `key-auth` + 2 `rate-limiting-advanced` (route-level, each linking to `platform-redis` by `id:`), 1 `request-size-limiting` (service-level, `service: Bookings_API`)
+- `services/flights/kong/plugins.yaml` — 1 `rate-limiting-advanced` (route-level, `route: Flights_API-getFlights`, also linking to `platform-redis`)
 - `platform/kong/plugins/correlation-id.yaml` — global: applied everywhere, no route/service scoping, no single owning service
+- `platform/kong/partials/redis.yaml` — the shared `platform-redis` Partial (hardcoded `id:`), linked to by every `rate-limiting-advanced` entry above
 - `platform/kong/consumers/consumers.yaml` — Kong consumers and their key-auth credentials
 - `Makefile` — `generate` / `merge` / `validate` / `diff` / `sync` targets

@@ -19,6 +19,11 @@ SERVICE_PLUGIN_FILES  := $(wildcard services/*/kong/plugins.yaml)
 PLUGIN_FILES          := $(PLATFORM_PLUGIN_FILES) $(SERVICE_PLUGIN_FILES)
 CONSUMER_FILES        := platform/kong/consumers/consumers.yaml
 
+# Partials are shared config blocks (e.g. Redis connection details) that
+# plugins link to by name instead of repeating inline — platform-owned,
+# platform-wide, same reasoning as consumers.yaml and correlation-id.yaml.
+PARTIAL_FILES         := $(wildcard platform/kong/partials/*.yaml)
+
 # Built up as: one services/<svc>/kong/service.yaml per service (Service +
 # its Routes, nested, as `openapi2kong` naturally produces), then every
 # plugin file (service-scoped and platform-scoped), then the platform
@@ -27,7 +32,7 @@ CONSUMER_FILES        := platform/kong/consumers/consumers.yaml
 # first and platform-team files last makes the ownership split easy to
 # read here.
 SERVICE_FILES   := $(foreach s,$(SERVICES),services/$(s)/kong/service.yaml)
-ALL_FILES       := $(SERVICE_FILES) $(PLUGIN_FILES) $(CONSUMER_FILES)
+ALL_FILES       := $(SERVICE_FILES) $(PLUGIN_FILES) $(PARTIAL_FILES) $(CONSUMER_FILES)
 
 .PHONY: help generate merge validate diff sync clean all
 
@@ -64,6 +69,10 @@ generate: ## Regenerate kong/service.yaml for every service from its openapi.yam
 #   - platform/kong/plugins/*.yaml holds plugins that apply across every
 #     service (no `route:`/`service:` key at all), since those don't
 #     belong to any single service's folder.
+#   - platform/kong/partials/*.yaml holds shared config blocks (e.g. Redis
+#     connection details) that plugins in either of the above link to via
+#     a `partials:` foreign key, instead of repeating the same settings
+#     inline in every plugin entry that needs them.
 
 ## --- Shared pipeline ---------------------------------------------------------
 merge: ## Merge every service's kong/service.yaml / plugin file / consumers.yaml into build/deck.yaml

@@ -18,7 +18,7 @@ make all       # = make generate + make validate
 cat build/deck.yaml
 ```
 
-`make generate` reads every `services/<svc>/openapi.yaml`, runs `deck file openapi2kong`, and writes the result to `services/<svc>/kong/service.yaml` — one file per service, with the Gateway Service and its Routes nested together exactly as decK produces them. `make validate` then merges those with every service's `kong/plugins.yaml`, the platform-wide global plugin files, and `consumers.yaml` into `build/deck.yaml` and validates it offline.
+`make generate` reads every `services/<svc>/openapi.yaml`, runs `deck file openapi2kong`, and writes the result to `services/<svc>/kong/service.yaml` — one file per service, with the Gateway Service and its Routes nested together exactly as decK produces them. `make validate` then merges those with every service's `kong/plugins.yaml`, the platform-wide global plugin files, the shared Redis Partial, and `consumers.yaml` into `build/deck.yaml` and validates it offline.
 
 ## Step 2: Deploy the Example Services
 
@@ -83,6 +83,23 @@ plugins:
 
 Run `make validate` — decK reports a broken foreign key immediately if the route name doesn't match any route nested in a `kong/service.yaml`.
 
+If the plugin needs Redis (e.g. `rate-limiting-advanced` with `strategy: redis`), don't put a Redis host/port directly in this file — link to the shared Partial the platform team already runs instead:
+
+```yaml
+# services/my-service/kong/plugins.yaml
+  - name: rate-limiting-advanced
+    route: My_Service_API-getHealth
+    partials:
+      - id: 9e8b1f1a-2b3c-4d5e-8f6a-1a2b3c4d5e6f   # platform-redis, from platform/kong/partials/redis.yaml
+        path: config.redis
+    config:
+      limit: [100]
+      window_size: [60]
+      strategy: redis
+```
+
+Note this links by `id:`, not `name:` — copy the exact `id:` from `platform/kong/partials/redis.yaml` rather than referencing the Partial's `name:` field, since decK resolves `plugins[].partials[].id` as a literal id, not a name lookup.
+
 ## Step 5: Validate and Open a PR
 
 ```bash
@@ -104,13 +121,14 @@ Open a pull request. In CI, `make diff` (with Konnect credentials set as pipelin
 | `services/bookings/kong/plugins.yaml` | Platform team | 4 `key-auth` + 2 `rate-limiting-advanced` (route-level, by name), 1 `request-size-limiting` (service-level: `service: Bookings_API`, covers all its routes) |
 | `services/flights/kong/plugins.yaml` | Platform team | 1 `rate-limiting-advanced` (route-level, by name) |
 | `platform/kong/plugins/correlation-id.yaml` | Platform team | Global: applied everywhere, no route/service scoping, no single owning service |
+| `platform/kong/partials/redis.yaml` | Platform team | Shared `platform-redis` Partial (hardcoded `id:`), linked to from every `rate-limiting-advanced` entry above |
 | `platform/kong/consumers/consumers.yaml` | Platform team | Kong consumers + credentials |
 | `Makefile` | Platform team | `generate` / `merge` / `validate` / `diff` / `sync` targets |
 
 ## Troubleshooting
 
 ### `make validate` fails with a foreign key / "not found" error
-A plugin file references a route name that doesn't exist. Check the exact name in the relevant service's `kong/service.yaml` — it's always `<ServiceName>-<operationId>`, taken verbatim from the OpenAPI spec's `operationId`.
+A plugin file references a route name, service name, or Partial `id:` that doesn't exist. Route/service names are always `<ServiceName>-<operationId>` or `<ServiceName>`, taken verbatim from the generated `kong/service.yaml`; a Partial `id:` has to match exactly what's defined in `platform/kong/partials/redis.yaml`.
 
 ### `make generate` produces a diff you didn't expect
 This means `openapi.yaml` changed since `kong/service.yaml` was last generated. Re-run `make generate` and review the diff — it should be exactly the routing change you made to the spec, nothing else.

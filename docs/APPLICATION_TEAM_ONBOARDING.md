@@ -145,7 +145,24 @@ If instead the whole `kongair-loyalty` service needed a payload cap, the platfor
       size_unit: megabytes
 ```
 
-Your `kong/service.yaml` is never touched to make either of these happen — `kong/plugins.yaml`, sitting next to it in your own service folder, is the only file that changes.
+If your rate-limited route needed Redis-backed counters (so limits are shared across every Kong node, not just tracked per-node), the platform team would add one more thing to the `rate-limiting-advanced` entry — a link to the Redis connection the platform team already runs, instead of typing in a Redis host themselves:
+
+```yaml
+# services/kongair-loyalty/kong/plugins.yaml (same file, another entry)
+  - name: rate-limiting-advanced
+    route: KongAir_Loyalty_API-getMemberPoints
+    partials:
+      - id: 9e8b1f1a-2b3c-4d5e-8f6a-1a2b3c4d5e6f   # platform-redis, from platform/kong/partials/redis.yaml
+        path: config.redis
+    config:
+      limit: [100]
+      window_size: [60]
+      strategy: redis
+```
+
+That `platform-redis` Partial is infrastructure the platform team manages once in `platform/kong/partials/redis.yaml` (not inside your service's folder, since it isn't scoped to one service) — you never need to know its host or port, only that it exists and that `strategy: redis` plugins can link to it.
+
+Your `kong/service.yaml` is never touched to make any of this happen — `kong/plugins.yaml`, sitting next to it in your own service folder, is the only file that changes.
 
 ---
 

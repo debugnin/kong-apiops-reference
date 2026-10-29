@@ -8,7 +8,7 @@ This repository is a reference template for managing Kong Gateway configuration 
 4. `deck file merge` combines every service's `kong/service.yaml`, every `kong/plugins.yaml`, the platform-wide plugin files, and the consumer file into one `build/deck.yaml`.
 5. `deck file validate` checks the merged result offline, then `deck gateway sync` (or `diff`) applies it to Kong Konnect.
 
-The two example services, **Bookings** and **Flights**, are fictional — part of the [KongAir](https://github.com/Kong/KongAir) demo airline used across Kong's reference material. Both point at [`httpbin.konghq.com`](https://httpbin.konghq.com), Kong's public httpbin instance, as their upstream, so the workflow in this repo runs against a real, reachable backend rather than a mocked one. Four plugins are demonstrated, one per scoping pattern: `key-auth` and `rate-limiting-advanced` are route-level, each applied to a hand-picked subset of routes; `request-size-limiting` is service-level, applied to every route under one Service without naming them; and `correlation-id` is global, applied to every route in every Service.
+The two example services, **Bookings** and **Flights**, are fictional — part of the [KongAir](https://github.com/Kong/KongAir) demo airline used across Kong's reference material. Both point at [`httpbin.konghq.com`](https://httpbin.konghq.com), Kong's public httpbin instance, as their upstream, so the workflow in this repo runs against a real, reachable backend rather than a mocked one. Four plugins are demonstrated, one per scoping pattern: `key-auth` and `rate-limiting-advanced` are route-level, each applied to a hand-picked subset of routes; `request-size-limiting` is service-level, applied to every route under one Service without naming them; and `correlation-id` is global, applied to every route in every Service. All three `rate-limiting-advanced` entries also link to one shared `platform-redis` [Partial](https://developer.konghq.com/gateway/entities/partial/) by its hardcoded `id:`, instead of each repeating Redis connection details inline.
 
 ## Ownership Model
 
@@ -18,10 +18,11 @@ The two example services, **Bookings** and **Flights**, are fictional — part o
 | **Application team** | `services/<service>/kong/service.yaml` — generated, committed    |
 | **Platform team**    | `services/<service>/kong/plugins.yaml` — route-level and service-level plugins for that one service |
 | **Platform team**    | `platform/kong/plugins/*.yaml` — plugins that apply across every service (global) |
+| **Platform team**    | `platform/kong/partials/*.yaml` — shared config blocks (e.g. Redis connection) that plugins link to by `id:` |
 | **Platform team**    | `platform/kong/consumers/consumers.yaml`                          |
 | **Platform team**    | `Makefile` — the merge/validate/sync pipeline                    |
 
-Application teams declare _what_ their service is via an OpenAPI spec, and run `make generate` to turn it into `kong/service.yaml` (Service + Routes, nested), which is committed so PRs show exactly what routing changed. The platform team owns everything about _which Services/Routes get which cross-cutting behaviour_ — auth, rate limiting, payload limits — in `kong/plugins.yaml` files that sit next to (but never inside) the service they govern, plus `platform/kong/plugins/` for anything with no single owning service. Either way, a service's own `openapi.yaml`/`kong/service.yaml` is never edited to add a plugin.
+Application teams declare _what_ their service is via an OpenAPI spec, and run `make generate` to turn it into `kong/service.yaml` (Service + Routes, nested), which is committed so PRs show exactly what routing changed. The platform team owns everything about _which Services/Routes get which cross-cutting behaviour_ — auth, rate limiting, payload limits — in `kong/plugins.yaml` files that sit next to (but never inside) the service they govern, plus `platform/kong/plugins/` for anything with no single owning service, plus `platform/kong/partials/` for shared config those plugins link to instead of repeating inline. Either way, a service's own `openapi.yaml`/`kong/service.yaml` is never edited to add a plugin.
 
 ## Repository Structure
 
@@ -44,6 +45,8 @@ Application teams declare _what_ their service is via an OpenAPI spec, and run `
 │   └── kong/
 │       ├── plugins/
 │       │   └── correlation-id.yaml # global: no route:/service: key, every Route everywhere
+│       ├── partials/
+│       │   └── redis.yaml          # shared Redis config, linked to by id: from plugins
 │       └── consumers/
 │           └── consumers.yaml      # Consumers + their key-auth credentials
 │
@@ -117,6 +120,42 @@ Request tracing is a textbook case for this: every request should get a correlat
 | Service-level | `service: <service-name>` | the service's own `kong/plugins.yaml` | `request-size-limiting` in `services/bookings/kong/plugins.yaml` | Every Route under the named Service |
 | Global | *(neither key)* | `platform/kong/plugins/` | `correlation-id.yaml` | Every Route in every Service |
 
+## Partials — Shared Config a Plugin Links To, Instead of Repeating
+
+Route-level, service-level, and global are all answers to "which Routes does this plugin apply to." A [Partial](https://developer.konghq.com/gateway/entities/partial/) answers a different question: "where does this plugin's *shared configuration* live, so it isn't copy-pasted into every plugin entry that needs it." `platform/kong/partials/redis.yaml` defines one:
+
+```yaml
+# platform/kong/partials/redis.yaml
+_format_version: "3.0"
+partials:
+  - id: 9e8b1f1a-2b3c-4d5e-8f6a-1a2b3c4d5e6f
+    name: platform-redis
+    type: redis-ee
+    config:
+      host: redis.platform.internal
+      port: 6379
+```
+
+All three `rate-limiting-advanced` entries in this repo (two in `services/bookings/kong/plugins.yaml`, one in `services/flights/kong/plugins.yaml`) use `strategy: redis` and link to this one Partial instead of each declaring their own `config.redis.host`/`port`:
+
+```yaml
+# services/bookings/kong/plugins.yaml (one of the rate-limiting-advanced entries)
+  - name: rate-limiting-advanced
+    route: Bookings_API-createBooking
+    partials:
+      - id: 9e8b1f1a-2b3c-4d5e-8f6a-1a2b3c4d5e6f
+        path: config.redis
+    config:
+      limit: [10]
+      window_size: [60]
+      sync_rate: -1
+      strategy: redis
+```
+
+Notice the plugin links to the Partial by `id:`, not `name:`. Unlike `plugins[].route`/`plugins[].service` (which decK resolves as plain string *names*), `plugins[].partials[].id` is a literal id — decK doesn't do a name lookup for it. That id is hardcoded in this repo (a fixed UUID picked once, not left for Kong to generate) precisely so it can be copied verbatim into every plugin entry that needs this Partial, and so renaming the Partial's `name:` field later wouldn't break anything that links to it by `id:`. `path: config.redis` tells decK which part of the plugin's own config schema the Partial's `config` block fills in — `rate-limiting-advanced`'s schema has a `config.redis` object exactly as big as what the Partial supplies.
+
+The result: the platform team can update Redis connection details in exactly one file (`platform/kong/partials/redis.yaml`) and have it apply to every plugin across every service that links to it, the same "one place to change it" benefit `correlation-id.yaml` gets from being global — just for shared *configuration* instead of shared *behaviour*. And because a Partial is checked with the same offline foreign-key validation as `route:`/`service:`, a typo'd `id:` fails `make validate` immediately rather than surfacing as a runtime error against a real Redis.
+
 ## The `deck` Conversion Flow
 
 ```
@@ -130,6 +169,7 @@ services/<service>/kong/service.yaml   (Service + nested Routes, committed, per 
     │  deck file merge <every service's kong/service.yaml> \
     │                  <every service's kong/plugins.yaml> \
     │                  platform/kong/plugins/*.yaml \
+    │                  platform/kong/partials/*.yaml \
     │                  platform/kong/consumers/consumers.yaml
 build/deck.yaml   (one combined, gitignored file)
     │
@@ -150,7 +190,7 @@ Try it yourself — see [Local Validation](#local-validation) below.
 | Target          | What it does |
 | ---------------- | -------------------------------------------------------------------------- |
 | `make generate`  | Regenerate `kong/service.yaml` for every service from its `openapi.yaml`. Run after any spec change. |
-| `make merge`     | Combine every service/plugin/consumer file into `build/deck.yaml`. |
+| `make merge`     | Combine every service/plugin/partial/consumer file into `build/deck.yaml`. |
 | `make validate`  | `make merge`, then validate the result offline (no Kong connection needed). |
 | `make diff`      | `make validate`, then show what would change on the control plane. Requires `DECK_KONNECT_TOKEN` and `DECK_KONNECT_CONTROL_PLANE_NAME`. |
 | `make sync`      | `make validate`, then apply the merged config to the control plane. Same env vars as `diff`. |
@@ -180,9 +220,9 @@ Both specs hardcode `https://httpbin.konghq.com` as `servers[0].url`, so `deck f
 | `GET /flights/{flightNumber}/details` | — | — | — |
 | `OPTIONS /flights*` (CORS preflight) | — | — | — |
 
-All six bookings rows come from `services/bookings/kong/plugins.yaml`; the one flights row comes from `services/flights/kong/plugins.yaml`. Every `request-size-limiting` ✅ above comes from the *same single entry* in bookings' `kong/plugins.yaml`, naming `service: Bookings_API` — not five separate route entries. `correlation-id` isn't in the table at all: it has no `route:`/`service:` key, so it applies to every row including both CORS preflight routes, with nothing to name.
+All six bookings rows come from `services/bookings/kong/plugins.yaml`; the one flights row comes from `services/flights/kong/plugins.yaml`. Every `request-size-limiting` ✅ above comes from the *same single entry* in bookings' `kong/plugins.yaml`, naming `service: Bookings_API` — not five separate route entries. `correlation-id` isn't in the table at all: it has no `route:`/`service:` key, so it applies to every row including both CORS preflight routes, with nothing to name. Every `rate-limiting-advanced` ✅ above also links to the same `platform-redis` Partial (`platform/kong/partials/redis.yaml`) by `id:` — not shown as its own column, since it's shared config a plugin depends on, not a separate scoping decision about which routes get rate limited.
 
-Booking routes carry customer data, so every non-preflight booking route requires `key-auth`. Flight schedules are public read-only data, so none of them require auth — but the top-level listing endpoint (`GET /flights`) is rate limited since it's the highest-traffic, unauthenticated route. The two state-changing booking routes (`createBooking`, `cancelBooking`) are rate limited to protect the upstream from abusive write traffic, and the entire bookings service has a 1 MB request body cap since it's the only service accepting a JSON body at all. This spread is intentional: it shows plugins stacking on one route, applying to a whole service, applying globally, and not applying at all — all from a handful of small, service-scoped files plus one global one.
+Booking routes carry customer data, so every non-preflight booking route requires `key-auth`. Flight schedules are public read-only data, so none of them require auth — but the top-level listing endpoint (`GET /flights`) is rate limited since it's the highest-traffic, unauthenticated route. The two state-changing booking routes (`createBooking`, `cancelBooking`) are rate limited to protect the upstream from abusive write traffic, and the entire bookings service has a 1 MB request body cap since it's the only service accepting a JSON body at all. This spread is intentional: it shows plugins stacking on one route, applying to a whole service, applying globally, and not applying at all — all from a handful of small, service-scoped files plus one global one, with Redis connection details for every rate-limited route centralized in one Partial rather than copy-pasted three times.
 
 ## Adding a New Service
 
@@ -200,6 +240,7 @@ Booking routes carry customer data, so every non-preflight booking route require
    - **Route-level** (most plugins): one entry per Route that needs it, using `route: <route-name>` (the same name decK generated under that service's `routes:` array in `kong/service.yaml`) — see `key-auth` in `services/bookings/kong/plugins.yaml`.
    - **Service-level** (applies uniformly to the whole service, not individual routes): one entry using `service: <service-name>` instead of `route:` — see `request-size-limiting` in the same file.
 3. `make validate` — for route-level and service-level entries, decK will report a broken foreign key if the name is misspelled or doesn't exist yet.
+4. If the plugin needs shared configuration that other plugins also need (most commonly a Redis connection, for plugins with a `strategy: redis`-style option), don't repeat it inline — add a Partial to `platform/kong/partials/<name>.yaml` (or reuse `platform-redis` if a Redis Partial already exists) and reference it from the plugin via `partials: [{id: <the-partial's-id>, path: <config-path>}]`. See the [Partials](#partials--shared-config-a-plugin-links-to-instead-of-repeating) section above for the full example and why `id:`, not `name:`, is what plugins link by.
 
 ## Local Validation
 
@@ -232,6 +273,7 @@ DECK_KONNECT_CONTROL_PLANE_NAME=your-cp \
 - [deck Documentation](https://developer.konghq.com/deck/)
 - [deck: Select tags and lookup tags](https://developer.konghq.com/deck/gateway/tags/) — the foreign-key/partial-config pattern this repo relies on
 - [deck: Managing plugins with decK](https://developer.konghq.com/deck/file/manipulation/plugins/)
+- [Kong Gateway: Partials](https://developer.konghq.com/gateway/entities/partial/) — the shared-config entity `platform/kong/partials/redis.yaml` uses
 - [Kong Konnect](https://docs.konghq.com/konnect/)
 - [OpenAPI Specification](https://swagger.io/specification/)
 - [KongAir](https://github.com/Kong/KongAir) — the demo airline these example services are drawn from

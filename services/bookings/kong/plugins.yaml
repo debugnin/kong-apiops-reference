@@ -20,7 +20,13 @@
 #
 # rate-limiting-advanced: applied to the two state-changing routes
 # (create/cancel), to protect the upstream from abusive write traffic.
-# GET routes are left unlimited.
+# GET routes are left unlimited. Both entries use `strategy: redis` and
+# link to platform/kong/partials/redis.yaml via `partials:` instead of
+# repeating Redis connection details inline — see that file for why a
+# Partial, rather than a plugin field, is the right place for that config.
+# The `id:` below is that Partial's hardcoded id, copied verbatim from
+# platform/kong/partials/redis.yaml — decK resolves it as a literal id,
+# not a name lookup.
 #
 # request-size-limiting: applied once, at the service level, since booking
 # creation accepts a JSON body and is the one place in this repo an
@@ -50,22 +56,28 @@ plugins:
         - apikey
   - name: rate-limiting-advanced
     route: Bookings_API-createBooking
+    partials:
+      - id: 9e8b1f1a-2b3c-4d5e-8f6a-1a2b3c4d5e6f
+        path: config.redis
     config:
       limit:
         - 10
       window_size:
         - 60
       sync_rate: -1
-      strategy: local
+      strategy: redis
   - name: rate-limiting-advanced
     route: Bookings_API-cancelBooking
+    partials:
+      - id: 9e8b1f1a-2b3c-4d5e-8f6a-1a2b3c4d5e6f
+        path: config.redis
     config:
       limit:
         - 10
       window_size:
         - 60
       sync_rate: -1
-      strategy: local
+      strategy: redis
   - name: request-size-limiting
     service: Bookings_API
     config:

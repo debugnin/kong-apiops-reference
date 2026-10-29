@@ -1,0 +1,33 @@
+# Redis Partial — shared connection config, platform-owned, platform-wide.
+#
+# A Partial is a fourth kind of "shared config" alongside Services/Routes,
+# plugins, and Consumers: it's a reusable block of configuration that
+# plugins link to by name, instead of repeating the same settings (here,
+# Redis connection details) inside every plugin entry that needs them.
+# Kong Gateway has its own `partials` entity for this — see
+# https://developer.konghq.com/gateway/entities/partial/
+#
+# This lives under platform/kong/, not inside any one service's kong/
+# folder, for the same reason correlation-id.yaml and consumers.yaml do:
+# it isn't owned by bookings or flights specifically, it's infrastructure
+# the platform team runs once and every service's plugins can share.
+#
+# Used by the redis-backed rate-limiting-advanced entries in
+# services/bookings/kong/plugins.yaml and services/flights/kong/plugins.yaml
+# — see the `partials:` key on those plugin entries for how a plugin links
+# to this.
+#
+# `id:` is hardcoded here (a fixed UUID, not left for Kong to generate) so
+# that every plugin referencing this Partial can link to it by that exact
+# `id:`, the same way they'd link to a real Partial already created on a
+# live control plane — decK resolves `plugins[].partials[].id` as a
+# literal id, not a name lookup, so the id has to be known up front and
+# kept stable across edits to this file.
+_format_version: "3.0"
+partials:
+  - id: 9e8b1f1a-2b3c-4d5e-8f6a-1a2b3c4d5e6f
+    name: platform-redis
+    type: redis-ee
+    config:
+      host: redis.platform.internal
+      port: 6379

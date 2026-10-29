@@ -5,7 +5,12 @@
 # rate-limiting-advanced: route-level (`route: <route-name>`), applied only
 # to the public listing endpoint, which has no auth in front of it and is
 # the highest-traffic read route in this service. Flight lookups by number
-# and the CORS preflight routes are left unlimited.
+# and the CORS preflight routes are left unlimited. Uses `strategy: redis`
+# and links to the same shared Redis Partial bookings uses
+# (platform/kong/partials/redis.yaml), so both services' counters are
+# backed by the one Redis connection the platform team manages — no Redis
+# host/port repeated in this file at all. The `id:` below is that
+# Partial's hardcoded id, the same one bookings' kong/plugins.yaml uses.
 #
 # flights has no key-auth or request-size-limiting entry: flight schedules
 # are public read-only data (no key-auth needed) and every route here is a
@@ -14,10 +19,13 @@ _format_version: "3.0"
 plugins:
   - name: rate-limiting-advanced
     route: Flights_API-getFlights
+    partials:
+      - id: 9e8b1f1a-2b3c-4d5e-8f6a-1a2b3c4d5e6f
+        path: config.redis
     config:
       limit:
         - 100
       window_size:
         - 60
       sync_rate: -1
-      strategy: local
+      strategy: redis

@@ -22,22 +22,23 @@ deck file merge \
   services/bookings/kong/plugins.yaml \
   services/flights/kong/plugins.yaml \
   platform/kong/plugins/correlation-id.yaml \
+  platform/kong/partials/redis.yaml \
   platform/kong/consumers/consumers.yaml \
   -o build/deck.yaml
 ```
 
-(The Makefile actually passes `$(wildcard services/*/kong/plugins.yaml)` plus `$(wildcard platform/kong/plugins/*.yaml)` so a new service's `plugins.yaml`, or a new global plugin file, is picked up automatically — nothing to edit here when one is added.)
+(The Makefile actually passes `$(wildcard services/*/kong/plugins.yaml)` plus `$(wildcard platform/kong/plugins/*.yaml)` plus `$(wildcard platform/kong/partials/*.yaml)` so a new service's `plugins.yaml`, a new global plugin file, or a new Partial file is picked up automatically — nothing to edit here when one is added.)
 
-`deck file merge` combines entities by type regardless of which file they came from. Each service's `kong/service.yaml` contributes a Service with its Routes nested inside. Each plugin file contributes top-level `plugins:` entries using whichever of three keys fits that plugin: `route: <name>` (route-level, e.g. the `key-auth` entries in `services/bookings/kong/plugins.yaml`), `service: <name>` (service-level, e.g. the `request-size-limiting` entry in that same file), or neither (global, e.g. `platform/kong/plugins/correlation-id.yaml`). The output is one flat `build/deck.yaml` with every foreign key resolved.
+`deck file merge` combines entities by type regardless of which file they came from. Each service's `kong/service.yaml` contributes a Service with its Routes nested inside. Each plugin file contributes top-level `plugins:` entries using whichever of three keys fits that plugin: `route: <name>` (route-level, e.g. the `key-auth` entries in `services/bookings/kong/plugins.yaml`), `service: <name>` (service-level, e.g. the `request-size-limiting` entry in that same file), or neither (global, e.g. `platform/kong/plugins/correlation-id.yaml`). `platform/kong/partials/redis.yaml` contributes a top-level `partials:` entry, which plugin entries elsewhere link to via `plugins[].partials[].id` — a distinct foreign key from `route:`/`service:`, resolving to a Partial's `id:` instead of a Route's or Service's name. The output is one flat `build/deck.yaml` with every foreign key resolved.
 
 ### `make validate`
 
 Runs `make merge`, then `deck file validate build/deck.yaml`. This is **offline** — no connection to Kong — and checks:
 
 - YAML/schema validity of every entity
-- That every foreign key — every `route: <name>` and every `service: <name>` in a plugin entry — resolves to something that actually exists in the merged file. Entries with no `route:`/`service:` key (global plugins) have nothing to resolve and always pass this check.
+- That every foreign key — every `route: <name>`, every `service: <name>`, and every `plugins[].partials[].id` in a plugin entry — resolves to something that actually exists in the merged file. Entries with no `route:`/`service:` key (global plugins) have nothing to resolve and always pass this check.
 
-A typo in a plugin file's `route:` value — pointing at a route name that doesn't exist in any service's `kong/service.yaml` — fails here, before anything touches a real control plane.
+A typo in a plugin file's `route:` value — pointing at a route name that doesn't exist in any service's `kong/service.yaml` — fails here, before anything touches a real control plane. The same is true of a typo'd Partial `id:`: `deck file validate` reports `partial <id> for plugin <name>: entity not found` immediately, rather than that showing up only as a runtime Redis-connection failure after a real sync.
 
 ### `make diff` / `make sync`
 
@@ -140,10 +141,41 @@ git commit -m "Rate limit payments-api listPayments"
 
 This is the entire change — no other file is touched, and the plugin applies to exactly one route, in the payments-api service's own folder.
 
+## Workflow Example — Linking a Plugin to a Shared Redis Partial
+
+If `payments-api` needed Redis-backed rate limiting instead of the `local` strategy, it would reuse the Partial already defined in `platform/kong/partials/redis.yaml` rather than declaring its own Redis host/port:
+
+```bash
+cat platform/kong/partials/redis.yaml   # confirm the id: to link to
+# partials:
+#   - id: 9e8b1f1a-2b3c-4d5e-8f6a-1a2b3c4d5e6f
+#     name: platform-redis
+#     ...
+
+vim services/payments-api/kong/plugins.yaml
+# change the rate-limiting-advanced entry to:
+#   - name: rate-limiting-advanced
+#     route: Payments_API-listPayments
+#     partials:
+#       - id: 9e8b1f1a-2b3c-4d5e-8f6a-1a2b3c4d5e6f
+#         path: config.redis
+#     config:
+#       limit: [50]
+#       window_size: [60]
+#       sync_rate: -1
+#       strategy: redis
+
+make validate   # confirms the partial id resolves
+git add services/payments-api/kong/plugins.yaml
+git commit -m "Back payments-api rate limiting with the shared Redis partial"
+```
+
+Note the plugin links by `id:`, not `name:` — unlike `route:`/`service:`, decK does not resolve a Partial by looking up its `name:`; `plugins[].partials[].id` has to be the literal id already assigned to that Partial in `platform/kong/partials/redis.yaml`. No new Partial is created here; `payments-api` is just pointed at the one the platform team already runs.
+
 ## Troubleshooting
 
 ### `make validate` fails with a foreign-key error
-`deck file validate` reports exactly which reference is broken (e.g. a plugin's `route:` value). Check for a typo, or that the referenced service's `kong/service.yaml` was actually regenerated with `make generate` after a rename.
+`deck file validate` reports exactly which reference is broken (e.g. a plugin's `route:` value, or a `plugins[].partials[].id` with no matching Partial). Check for a typo, that the referenced service's `kong/service.yaml` was actually regenerated with `make generate` after a rename, or that the `id:` matches the one defined in `platform/kong/partials/redis.yaml` exactly.
 
 ### `make generate` output doesn't match what's committed
 `kong/service.yaml` is generated, deterministic output of `openapi.yaml` — if `make generate` followed by `git diff` shows unexpected changes, either `openapi.yaml` changed and the generated file is now stale (commit the new output), or the generated file was hand-edited out of band (regenerate and commit that instead).
@@ -155,13 +187,15 @@ This is the entire change — no other file is touched, and the plugin applies t
 
 1. **Never hand-edit `kong/service.yaml`** — regenerate it with `make generate` from `openapi.yaml`, which stays the single source of truth for routing.
 2. **Every service's plugins live in that service's own `kong/plugins.yaml`; genuinely global plugins live under `platform/kong/plugins/`** — route-scoped and service-scoped entries attach by name (route or service), and genuinely global plugins (no exceptions, every route in every service) omit `route:`/`service:` entirely instead of using a selector against `$..services[*]` or `$..routes[*]`. Either way, no plugin is nested inside a service's `kong/service.yaml`.
-3. **`make validate` before every commit** — it's fully offline and catches broken foreign keys immediately.
-4. **Review `make diff` output, not just the YAML diff** — a small YAML change (e.g. a renamed route) can have a larger control-plane effect than the diff suggests if plugin files still reference the old name.
+3. **Shared plugin configuration (Redis connections, etc.) goes in a Partial under `platform/kong/partials/`, linked by hardcoded `id:`** — never repeat the same `config.redis` block across multiple plugin entries; define it once and point every plugin at the same `id:`.
+4. **`make validate` before every commit** — it's fully offline and catches broken foreign keys immediately, including a mistyped Partial `id:`.
+5. **Review `make diff` output, not just the YAML diff** — a small YAML change (e.g. a renamed route) can have a larger control-plane effect than the diff suggests if plugin files still reference the old name.
 
 ## Resources
 
 - [deck Documentation](https://developer.konghq.com/deck/)
 - [deck: Select tags and lookup tags](https://developer.konghq.com/deck/gateway/tags/)
 - [deck: Managing plugins with decK](https://developer.konghq.com/deck/file/manipulation/plugins/)
+- [Kong Gateway: Partials](https://developer.konghq.com/gateway/entities/partial/)
 - [deck file merge](https://developer.konghq.com/deck/file/merge/)
 - [OpenAPI Specification](https://swagger.io/specification/)
